@@ -1,0 +1,28 @@
+{
+  "name": "@vengine/server",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/main.ts",
+    "start": "tsx src/main.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "clean": "rm -rf dist .turbo"
+  },
+  "dependencies": {
+    "@hono/node-server": "^1.13.0",
+    "@hono/node-ws": "^1.0.4",
+    "@vengine/core": "workspace:*",
+    "@vengine/nodes": "workspace:*",
+    "@vengine/providers": "workspace:*",
+    "@vengine/shared": "workspace:*",
+    "@vengine/storage": "workspace:*",
+    "hono": "^4.6.0",
+    "zod": "^3.24.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  }
+}

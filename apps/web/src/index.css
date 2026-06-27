@@ -1,0 +1,284 @@
+@import "tailwindcss";
+
+/* Dark is the default theme; `[data-theme="light"]` opts out.
+   The `dark` variant matches either an explicit dark attr or the absence of
+   a light attr, so dark-mode utilities work without extra wiring. */
+@custom-variant dark (&:where([data-theme=dark], [data-theme=dark] *, :root:not([data-theme=light]), :root:not([data-theme=light]) *));
+
+/* ─────────────────────────────────────────────────────────────────────
+   Design tokens — flat, minimal, fresh. Cool neutrals, single accent.
+   No heavy borders: structure comes from surface contrast + hairlines.
+   ───────────────────────────────────────────────────────────────────── */
+:root {
+  /* Type scale */
+  --text-scale: 1;
+  --t-3xs: calc(0.5rem * var(--text-scale));
+  --t-2xs: calc(0.5625rem * var(--text-scale));
+  --t-xs: calc(0.625rem * var(--text-scale));
+  --t-sm: calc(0.6875rem * var(--text-scale));
+  --t-base: calc(0.75rem * var(--text-scale));
+  --t-md: calc(0.8125rem * var(--text-scale));
+  --t-lg: calc(0.875rem * var(--text-scale));
+  --t-xl: calc(1rem * var(--text-scale));
+  --t-2xl: calc(1.125rem * var(--text-scale));
+  --t-3xl: calc(1.25rem * var(--text-scale));
+  --t-4xl: calc(1.5rem * var(--text-scale));
+  --t-5xl: calc(1.75rem * var(--text-scale));
+
+  /* Radii — small, consistent */
+  --r-xs: 3px;
+  --r-sm: 4px;
+  --r-md: 6px;
+  --r-lg: 8px;
+  --r-xl: 12px;
+}
+
+/* ── Dark (default) — deep cool slate, electric-indigo accent ───────── */
+:root,
+[data-theme="dark"] {
+  --v-bg: #0a0b0f;
+  --v-surface: #0e0f14;
+  --v-elevated: #14161d;
+  --v-card: #14161d;
+  --v-border: #1d2029;
+  --v-border-strong: #2a2e3a;
+  --v-border-light: #16181f;
+  --v-text: #e6e8ee;
+  --v-muted: #9aa0ad;
+  --v-faint: #646a78;
+  --v-accent: #818cf8;
+  --v-accent-hover: #99a2fb;
+  --v-accent-contrast: #0a0b0f;
+  --v-accent-soft: rgba(129, 140, 248, 0.12);
+  --v-green: #5ec98a;
+  --v-green-bg: rgba(94, 201, 138, 0.12);
+  --v-red: #f06d83;
+  --v-red-bg: rgba(240, 109, 131, 0.12);
+  --v-amber: #e0a35b;
+  --v-amber-bg: rgba(224, 163, 91, 0.12);
+  --v-cyan: #5ab9c9;
+  --v-purple: #b58cf0;
+
+  color-scheme: dark;
+}
+
+/* ── Light — soft cool paper, same indigo ──────────────────────────── */
+[data-theme="light"] {
+  --v-bg: #f5f6f8;
+  --v-surface: #eef0f4;
+  --v-elevated: #e6e9ef;
+  --v-card: #ffffff;
+  --v-border: #e6e9ef;
+  --v-border-strong: #d3d8e1;
+  --v-border-light: #eef0f4;
+  --v-text: #0d1117;
+  --v-muted: #5b6370;
+  --v-faint: #8a91a0;
+  --v-accent: #4f46e5;
+  --v-accent-hover: #4338ca;
+  --v-accent-contrast: #ffffff;
+  --v-accent-soft: rgba(79, 70, 229, 0.08);
+  --v-green: #16a34a;
+  --v-green-bg: rgba(22, 163, 74, 0.08);
+  --v-red: #e11d48;
+  --v-red-bg: rgba(225, 29, 72, 0.08);
+  --v-amber: #b45309;
+  --v-amber-bg: rgba(180, 83, 9, 0.1);
+  --v-cyan: #0891b2;
+  --v-purple: #7c3aed;
+
+  color-scheme: light;
+}
+
+/* ── Map tokens to Tailwind utilities (bg-bg, text-muted, border-border…) ─ */
+@theme inline {
+  --color-bg: var(--v-bg);
+  --color-surface: var(--v-surface);
+  --color-elevated: var(--v-elevated);
+  --color-card: var(--v-card);
+  --color-border: var(--v-border);
+  --color-border-strong: var(--v-border-strong);
+  --color-border-light: var(--v-border-light);
+  --color-text: var(--v-text);
+  --color-muted: var(--v-muted);
+  --color-faint: var(--v-faint);
+  --color-accent: var(--v-accent);
+  --color-accent-hover: var(--v-accent-hover);
+  --color-accent-contrast: var(--v-accent-contrast);
+  --color-accent-soft: var(--v-accent-soft);
+  --color-up: var(--v-green);
+  --color-down: var(--v-red);
+  --color-amber: var(--v-amber);
+  --color-cyan: var(--v-cyan);
+  --color-purple: var(--v-purple);
+
+  --radius-xs: var(--r-xs);
+  --radius-sm: var(--r-sm);
+  --radius-md: var(--r-md);
+  --radius-lg: var(--r-lg);
+  --radius-xl: var(--r-xl);
+
+  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+}
+
+/* ─────────────────────────────────────────────────────────────────────
+   Base
+   ───────────────────────────────────────────────────────────────────── */
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--v-bg);
+  color: var(--v-text);
+  font-family: var(--font-sans);
+  font-size: var(--t-md);
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-feature-settings: "cv11", "ss01";
+}
+
+/* Tabular numerals wherever mono is used (costs, counts, hashes). */
+.font-mono,
+.tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Scrollbar — thin, near-invisible until hover. */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: transparent;
+  border-radius: 999px;
+  transition: background 120ms ease;
+}
+*:hover::-webkit-scrollbar-thumb {
+  background: var(--v-border-strong);
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--v-faint);
+}
+
+/* Focus ring — slim, accent-tinted. */
+:where(input, select, textarea, button, a):focus-visible {
+  outline: 2px solid var(--v-accent);
+  outline-offset: 1px;
+  border-radius: var(--r-sm);
+}
+
+/* ─────────────────────────────────────────────────────────────────────
+   Flat-layout helpers — structure without bordered cards everywhere.
+   ───────────────────────────────────────────────────────────────────── */
+
+/* Hairline divider. */
+.hairline {
+  background: var(--v-border);
+  height: 1px;
+  width: 100%;
+}
+
+/* Eyebrow — small uppercase section label used instead of card titles. */
+.eyebrow {
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--v-faint);
+}
+
+/* Up / down / flat semantic text. */
+.v-up {
+  color: var(--v-green);
+}
+.v-down {
+  color: var(--v-red);
+}
+.v-flat {
+  color: var(--v-muted);
+}
+
+/* Pulsing status dot — used instead of colored border bars. */
+@keyframes holo-dot-pulse {
+  0%,
+  100% {
+    opacity: 1;
+    box-shadow: 0 0 2px 0 currentColor;
+  }
+  50% {
+    opacity: 0.3;
+    box-shadow: 0 0 6px 2px currentColor;
+  }
+}
+.holo-dot {
+  display: inline-block;
+  flex-shrink: 0;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  animation: holo-dot-pulse 2.4s ease-in-out infinite;
+  pointer-events: none;
+  vertical-align: middle;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .holo-dot {
+    animation: none;
+    opacity: 0.85;
+  }
+}
+
+/* ─────────────────────────────────────────────────────────────────────
+   React Flow surface — themed against tokens (no hardcoded greys).
+   ───────────────────────────────────────────────────────────────────── */
+.react-flow__background {
+  background: var(--v-bg);
+}
+.react-flow__edge-path {
+  stroke: var(--v-border-strong);
+  stroke-width: 1.5;
+}
+.react-flow__edge.selected .react-flow__edge-path,
+.react-flow__edge:hover .react-flow__edge-path {
+  stroke: var(--v-accent);
+}
+.react-flow__handle {
+  width: 9px;
+  height: 9px;
+  background: var(--v-accent);
+  border: 2px solid var(--v-bg);
+}
+.react-flow__controls {
+  border-radius: var(--r-md);
+  overflow: hidden;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+}
+.react-flow__controls button {
+  background: var(--v-elevated);
+  border-color: var(--v-border);
+  color: var(--v-muted);
+}
+.react-flow__controls button:hover {
+  background: var(--v-border-strong);
+  color: var(--v-text);
+}
+.react-flow__controls button svg {
+  fill: currentColor;
+}
+.react-flow__attribution {
+  display: none;
+}
