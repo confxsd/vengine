@@ -14,7 +14,9 @@ import {
   type ComicProject,
 } from "./comic.js";
 
-function project(overrides: Partial<ComicProject> = {}): ComicProject {
+// Loose param so tests can pass partial style/frame literals; the schema fills
+// defaults and validates at parse time.
+function project(overrides: Record<string, unknown> = {}): ComicProject {
   return ComicProjectSchema.parse({
     id: "p1",
     name: "Test comic",

@@ -403,36 +403,56 @@ single drawing, no text overlay**. It is a thin product layer that **compiles do
 engine** (executor, content-addressed cache, asset store, WS progress) with zero core changes.
 
 **Model.** A `ComicProject` (`packages/shared/src/comic.ts`) holds a main `story`, shared `settings`,
-one `style` (theme text, model, **locked seed**, 9:16 dims, optional **anchorHash** reference image,
-baked no-text `negative`), an editable `promptTemplate`, and an ordered list of `frames` (each: id,
-prompt, optional seed override, server-authoritative `resultHash`).
+one `style` (theme text, model, **locked seed**, true **9:16** dims (768×1344, the SDXL/fal-friendly
+portrait bucket), optional **anchorHash** reference image, baked no-text `negative`), an editable
+`promptTemplate`, and an ordered list of `frames`. Each frame: id, prompt, optional seed override,
+`resultHash` (the selected image), and `variants[]` (`{hash, seed}` iteration history, server-authoritative).
 
 **Context engineering.** `composeFramePrompt` substitutes `{story}/{settings}/{style}/{frame}` tokens
-deterministically — the UI's "final prompt" preview is byte-identical to what runs.
+deterministically, then **drops dangling labels** when a token is empty (no `"Setting:"` with no value)
+— the UI's "final prompt" preview is byte-identical to what runs.
 
 **Compilation.** `compileComic(project)` emits, per frame, a `generate.text-to-image` → `io.export`
 pair with **frame-id-based node ids** (`gen-<id>`/`export-<id>`) so reorder/remove never remaps cache
 keys or misroutes progress events. Seed precedence: `frame.seed ?? style.seed`.
 
-**Consistency.** Shared style text + one locked seed + an optional anchor image. The anchor is wired
-as `referenceHashes` (params, so it folds into the cache key) → fetched from the asset store →
-`NormalizedInput.references` (`packages/nodes/src/image.ts`). Reference-capable model adapters consume
-it; **mock/offline ignores it** (style+seed still give consistency).
+**Consistency.** Shared style text + one locked seed + an optional anchor image. The anchor flows as
+`referenceHashes` → `NormalizedInput.references` (`packages/nodes/src/image.ts`). Only adapters that set
+`consumesReferences` actually map them; the node's `cacheKeyParams` **drops `referenceHashes` from the
+cache key otherwise**, so toggling an anchor on a model that ignores it (mock, plain t2i) is a cache hit,
+not a wasted re-bill for identical bytes.
 
-**Persistence (local-first, JSON — SQLite deferred).** `ProjectStore`
-(`packages/storage/src/project-store.ts`) writes `~/.vengine/projects/<id>/{project.json, frames/,
-snapshots/}`. Atomic writes; `save` **merges `resultHash` by frame id** so a client autosave that
-omits it never clobbers a run's output. Snapshots are point-in-time copies.
+**Iteration (artwork workflow).** Every successful generation appends a `{hash, seed}` variant
+(`unionVariants`, deduped, capped at `MAX_VARIANTS`). The **🎲 vary** action rolls a fresh seed and
+regenerates one frame; the per-frame **variant strip** lets the artist pick a past iteration, which
+restores both its image and seed (reproducible). `runOne`/`targets` bills only that frame's sub-DAG.
 
-**Server** (`apps/server/src/comics.ts`): comics CRUD, snapshots, `/plan` (confirm-before-spend),
-`/run` (compile → `executor.run` with `targets` for single-frame regen → persist hashes), and
-`POST /api/assets` (multipart) for anchor upload.
+**Cost efficiency.** A persistent `FileOutputCache` (`packages/storage/src/output-cache.ts`, wired in
+`runtime.ts`) stores node outputs as sharded JSON under `~/.vengine/cache`, so an unchanged frame stays
+free **across server restarts** — the key lever for iterative paid generation (the old in-memory cache
+re-billed every restart). Preview/Final quality + dry-run `/plan` (confirm-before-spend) round it out.
+
+**Persistence (local-first, JSON).** `ProjectStore` (`packages/storage/src/project-store.ts`) writes
+`~/.vengine/projects/<id>/{project.json, frames/, snapshots/}`. Writes are atomic (unique temp +
+rename) and the whole read-modify-write is **serialized per id by an in-process mutex**. `save`
+union-merges `variants` and never clobbers `resultHash` with undefined; the run write-back uses
+`update()` to edit the **latest** doc under the lock, so edits made during a long run aren't lost.
+
+**Server** (`apps/server/src/comics.ts`): comics CRUD, snapshots, `/plan`, `/run` (compile →
+`executor.run` with `targets`; captures freshly streamed hashes so a cancelled/failed run still
+persists finished frames), **`POST /api/runs/:runId/cancel`** (AbortController registry — stops paid
+spend mid-run; client learns the runId from the WS start event), and `POST /api/assets` (multipart,
+image-only, 25 MB cap) for anchor upload.
 
 **UI** (`apps/web/src/comic/*`, `comicStore.ts`): storyboard is the default view (node canvas behind a
-`ModeToggle`). Project settings sidebar + a wrapping 9:16 frame grid with live per-frame status,
-per-frame regen, "set as anchor", reorder, debounced autosave, and snapshot.
+`ModeToggle`), built on the `components/ui` design system. Settings sidebar + a wrapping 9:16 frame
+grid with live per-frame status, regen, **vary**, variant strip, "set as anchor", reorder, and a
+**Cancel** button while running. Saves are **serialized and deferred during a run** (then flushed),
+and the client adopts the run's authoritative outputs; failures surface as **toasts** (sonner). WS
+events are scoped to the active run, so stale events can't resurrect cleared state.
 
-**Deferred follow-ups:** fal reference-image upload (a fal-storage spike + per-model `mapInput`);
-a **persistent `OutputCache`** (engine cache is in-memory, so unchanged frames are free only within a
-server lifetime — `resultHash`/exported files survive restarts for display, but fal recompute re-bills
-after restart); Claude prompt-enhance; a reference port + Character node for canvas power users.
+**Deferred follow-ups:** fal reference-image upload (a fal-storage spike + per-model `mapInput` that
+sets `consumesReferences` — until then the anchor is a no-op on paid models, but never a cost sink);
+Claude prompt-enhance; a reference port + Character node for canvas power users; partial-result capture
+for nodes that finish *after* an early run failure (their bytes persist in the asset store but aren't
+relinked — the executor would need to await in-flight on failure).

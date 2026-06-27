@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import { Calculator, Layers, Play, Plus } from "lucide-react";
+import { Calculator, Layers, Play, Plus, X } from "lucide-react";
 import { useComic } from "../comicStore";
 import { ModeToggle } from "../components/ModeToggle";
 import { Button, Input, Segmented, Select, ThemeToggle } from "../components/ui";
@@ -30,6 +30,7 @@ export function ComicStudio() {
     setQuality,
     doPlan,
     runAll,
+    cancelRun,
     snapshot,
     running,
     plan,
@@ -124,6 +125,17 @@ export function ComicStudio() {
 
         <ThemeToggle />
 
+        {running && (
+          <Button
+            variant="secondary"
+            size="lg"
+            className="text-down"
+            onClick={() => void cancelRun()}
+          >
+            <X className="h-3.5 w-3.5" />
+            Cancel
+          </Button>
+        )}
         <Button
           variant="accent"
           size="lg"

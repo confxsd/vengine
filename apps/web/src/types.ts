@@ -2,11 +2,19 @@ import type {
   ComicFrame,
   ComicProject,
   ComicStyle,
+  ComicVariant,
   NodeProgressEvent,
   NodeRunStatus,
 } from "@vengine/shared";
 
-export type { NodeProgressEvent, NodeRunStatus, ComicProject, ComicFrame, ComicStyle };
+export type {
+  NodeProgressEvent,
+  NodeRunStatus,
+  ComicProject,
+  ComicFrame,
+  ComicStyle,
+  ComicVariant,
+};
 
 /** Mirrors @vengine/storage ProjectStore.ProjectSummary (server-only package). */
 export interface ProjectSummary {
@@ -27,7 +35,7 @@ export interface ComicRunResult {
   runId: string;
   status: "pending" | "running" | "done" | "error" | "cancelled";
   error?: string;
-  frames: { id: string; resultHash?: string }[];
+  frames: { id: string; resultHash?: string; variants: ComicVariant[] }[];
 }
 
 export interface PortInfo {

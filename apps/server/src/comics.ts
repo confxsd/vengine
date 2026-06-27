@@ -6,6 +6,8 @@ import {
   compileComic,
   genNodeId,
   exportNodeId,
+  frameIdFromNodeId,
+  unionVariants,
   type ComicProject,
   type NodeProgressEvent,
 } from "@vengine/shared";
@@ -14,6 +16,7 @@ import type { Runtime } from "./runtime.js";
 type Broadcast = (event: NodeProgressEvent & { kind?: string }) => void;
 
 const shortId = () => randomUUID().slice(0, 8);
+const MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
 
 /** A fresh comic with a few empty frames to start from. */
 function newProject(name?: string): ComicProject {
@@ -35,6 +38,9 @@ const RunBody = z.object({
 
 /** Mount the Comic Studio routes onto the main Hono app. */
 export function registerComicRoutes(app: Hono, rt: Runtime, broadcast: Broadcast): void {
+  /** In-flight runs, so a client can cancel one by runId (stops paid spend). */
+  const runs = new Map<string, AbortController>();
+
   // List projects (for the switcher).
   app.get("/api/comics", async (c) => c.json(await rt.projects.list()));
 
@@ -92,7 +98,7 @@ export function registerComicRoutes(app: Hono, rt: Runtime, broadcast: Broadcast
     return c.json(plan);
   });
 
-  // Compile → run → persist resultHashes.
+  // Compile → run → persist freshly generated images into each frame's variants.
   app.post("/api/comics/:id/run", async (c) => {
     const id = c.req.param("id");
     const parsed = RunBody.safeParse(await c.req.json().catch(() => ({})));
@@ -106,32 +112,90 @@ export function registerComicRoutes(app: Hono, rt: Runtime, broadcast: Broadcast
 
     const graph = compileComic(project, { exportDir: rt.projects.framesDir(id) });
     const targets = parsed.data.frameIds?.map(exportNodeId);
+    // The seed actually compiled for each frame, recorded with its variant so a
+    // re-selected variant is reproducible.
+    const seedByFrame = new Map(project.frames.map((f) => [f.id, f.seed ?? project.style.seed]));
+
     const runId = randomUUID();
+    const ac = new AbortController();
+    runs.set(runId, ac);
     broadcast({ runId, nodeId: "*", status: "running", at: new Date().toISOString() });
 
-    const result = await rt.executor.run(graph, {
-      runId,
-      services: rt.services,
-      quality: parsed.data.quality,
-      targets,
-      emit: (e) => broadcast(e),
-    });
+    // Capture hashes as they stream so a cancelled/failed run still persists the
+    // frames that did finish (their bytes are already in the asset store).
+    const produced = new Map<string, string>();
+    const onEmit = (e: NodeProgressEvent) => {
+      const frameId = frameIdFromNodeId(e.nodeId);
+      if (frameId && e.nodeId.startsWith("gen-") && e.previewHash) produced.set(frameId, e.previewHash);
+      broadcast(e);
+    };
 
-    // Map generation results back to frames by id; resultHash from the run result
-    // (authoritative), not from the live WS stream.
-    const frames = project.frames.map((f) => {
-      const gen = result.nodes.get(genNodeId(f.id));
-      const hash = (gen?.outputs?.image as { hash?: string } | undefined)?.hash;
-      return hash ? { ...f, resultHash: hash } : f;
+    let result;
+    try {
+      result = await rt.executor.run(graph, {
+        runId,
+        services: rt.services,
+        quality: parsed.data.quality,
+        targets,
+        emit: onEmit,
+        signal: ac.signal,
+      });
+    } finally {
+      runs.delete(runId);
+    }
+
+    // Prefer the authoritative run result; fall back to streamed hashes for any
+    // frame that finished after an early stop.
+    for (const f of project.frames) {
+      const fromResult = (result.nodes.get(genNodeId(f.id))?.outputs?.image as { hash?: string } | undefined)
+        ?.hash;
+      const hash = fromResult ?? produced.get(f.id);
+      if (hash) produced.set(f.id, hash);
+    }
+
+    // Apply the delta to the *latest* document under the store lock, so edits made
+    // during a long run are preserved (only variants/resultHash change).
+    let saved = project;
+    try {
+      saved = await rt.projects.update(id, (latest) => ({
+        ...latest,
+        frames: latest.frames.map((f) => {
+          const hash = produced.get(f.id);
+          if (!hash) return f;
+          const seed = seedByFrame.get(f.id) ?? latest.style.seed;
+          return {
+            ...f,
+            resultHash: hash,
+            variants: unionVariants(f.variants, [{ hash, seed }]),
+          };
+        }),
+      }));
+    } catch {
+      /* project vanished mid-run — nothing to persist */
+    }
+
+    broadcast({
+      runId,
+      nodeId: "*",
+      status: result.status === "done" ? "done" : "error",
+      error: result.error,
+      at: new Date().toISOString(),
     });
-    const saved = await rt.projects.save({ ...project, frames });
 
     return c.json({
       runId: result.runId,
       status: result.status,
       error: result.error,
-      frames: saved.frames.map((f) => ({ id: f.id, resultHash: f.resultHash })),
+      frames: saved.frames.map((f) => ({ id: f.id, resultHash: f.resultHash, variants: f.variants })),
     });
+  });
+
+  // Cancel an in-flight run (the client learns runId from the "*" start event).
+  app.post("/api/runs/:runId/cancel", (c) => {
+    const ac = runs.get(c.req.param("runId"));
+    if (!ac) return c.json({ error: "no such run" }, 404);
+    ac.abort();
+    return c.json({ ok: true });
   });
 
   // Upload an image (e.g. a style anchor) into the content-addressed asset store.
@@ -139,8 +203,10 @@ export function registerComicRoutes(app: Hono, rt: Runtime, broadcast: Broadcast
     const body = await c.req.parseBody();
     const file = body.file;
     if (!(file instanceof File)) return c.json({ error: "expected a 'file' field" }, 400);
+    if (!file.type.startsWith("image/")) return c.json({ error: "expected an image file" }, 400);
+    if (file.size > MAX_UPLOAD_BYTES) return c.json({ error: "image too large (max 25 MB)" }, 413);
     const bytes = new Uint8Array(await file.arrayBuffer());
-    const ref = await rt.assets.put(bytes, file.type || "application/octet-stream");
+    const ref = await rt.assets.put(bytes, file.type);
     return c.json(ref, 201);
   });
 }

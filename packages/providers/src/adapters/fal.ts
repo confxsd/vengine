@@ -11,7 +11,7 @@ export interface FalModelConfig {
   /** Local adapter id, e.g. "fal/flux-2-pro". */
   id: string;
   displayName: string;
-  /** fal endpoint id, e.g. "fal-ai/flux-2/pro". */
+  /** fal endpoint id, e.g. "fal-ai/flux-2-pro" — the exact slug fal routes on. */
   endpoint: string;
   capabilities: Capability[];
   pricing: PricingModel;
@@ -91,6 +91,9 @@ export function createFalModel(config: FalModelConfig): ModelAdapter {
         throw new Error(`fal submit failed (${submitRes.status}): ${await submitRes.text()}`);
       }
       const submit = (await submitRes.json()) as FalSubmit;
+      // Prefer fal's authoritative URLs from the submit response; the fallback
+      // mirrors fal's queue scheme (status at `…/requests/{id}/status`, result at
+      // the bare `…/requests/{id}`).
       const base = `${QUEUE_BASE}/${config.endpoint}/requests/${submit.request_id}`;
       const statusUrl = submit.status_url ?? `${base}/status`;
       const responseUrl = submit.response_url ?? base;
@@ -165,7 +168,7 @@ export const falModels = {
   fluxProV2: createFalModel({
     id: "fal/flux-2-pro",
     displayName: "FLUX.2 [pro]",
-    endpoint: "fal-ai/flux-2/pro",
+    endpoint: "fal-ai/flux-2-pro",
     capabilities: ["text-to-image", "image-to-image", "edit"],
     pricing: { kind: "per-image", usd: 0.04 },
   }),

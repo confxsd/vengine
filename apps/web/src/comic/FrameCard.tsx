@@ -4,6 +4,7 @@ import {
   ArrowRight,
   ChevronDown,
   ChevronRight,
+  Dices,
   Play,
   Star,
   X,
@@ -38,21 +39,21 @@ export function FrameCard({ frame, index, total }: Props) {
     removeFrame,
     moveFrame,
     runOne,
+    varyFrame,
+    selectVariant,
+    displayHash,
     running,
     liveStatus,
-    livePreview,
     finalPrompt,
     setAnchorFromFrame,
   } = useComic();
   const openLightbox = useStudio((s) => s.openLightbox);
   const [showFinal, setShowFinal] = useState(false);
 
-  const status: NodeRunStatus =
-    liveStatus[frame.id] ?? (frame.resultHash ? "done" : "pending");
-  const previewHash = livePreview[frame.id] ?? frame.resultHash;
-  const isAnchor =
-    useComic((s) => s.project?.style.anchorHash) === frame.resultHash &&
-    !!frame.resultHash;
+  const previewHash = displayHash(frame);
+  const status: NodeRunStatus = liveStatus[frame.id] ?? (previewHash ? "done" : "pending");
+  const anchorHash = useComic((s) => s.project?.style.anchorHash);
+  const isAnchor = !!previewHash && anchorHash === previewHash;
 
   return (
     <Card className="flex w-56 shrink-0 flex-col gap-2 p-3 shadow-lg shadow-black/20 ring-1 ring-border">
@@ -120,6 +121,33 @@ export function FrameCard({ frame, index, total }: Props) {
         </div>
       )}
 
+      {/* Variant history — pick a past iteration to restore its image + seed. */}
+      {frame.variants.length > 1 && (
+        <div className="flex gap-1 overflow-x-auto pb-0.5">
+          {frame.variants.map((v) => {
+            const selected = v.hash === previewHash;
+            return (
+              <button
+                key={v.hash}
+                type="button"
+                onClick={() => selectVariant(frame.id, v)}
+                title={`seed ${v.seed}`}
+                className={cn(
+                  "h-12 w-9 shrink-0 overflow-hidden rounded ring-1 transition",
+                  selected ? "ring-2 ring-accent" : "ring-border hover:ring-border-strong",
+                )}
+              >
+                <img
+                  src={api.thumbUrl(v.hash)}
+                  alt={`variant seed ${v.seed}`}
+                  className="h-full w-full object-cover"
+                />
+              </button>
+            );
+          })}
+        </div>
+      )}
+
       <Textarea
         className="h-20"
         placeholder="Describe this frame's scene…"
@@ -140,6 +168,14 @@ export function FrameCard({ frame, index, total }: Props) {
           }
           title="Per-frame seed override (defaults to the project's locked seed)"
         />
+        <IconButton
+          variant="secondary"
+          label="Vary — regenerate with a fresh random seed"
+          onClick={() => varyFrame(frame.id)}
+          disabled={running}
+        >
+          <Dices className="h-3.5 w-3.5" />
+        </IconButton>
         <IconButton
           variant="accent"
           label="Generate just this frame"

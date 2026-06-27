@@ -60,6 +60,8 @@ export const api = {
     post<ComicRunResult>(`/api/comics/${id}/run`, { quality, frameIds }),
   snapshotComic: (id: string) => post<SnapshotEntry>(`/api/comics/${id}/snapshot`),
   snapshots: (id: string) => fetch(`/api/comics/${id}/snapshots`).then(json<SnapshotEntry[]>),
+  cancelRun: (runId: string) =>
+    fetch(`/api/runs/${runId}/cancel`, { method: "POST" }).then((r) => r.ok),
 
   uploadAsset: (file: File) => {
     const form = new FormData();

@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   ChevronDown,
   ChevronRight,
@@ -43,9 +43,55 @@ export function ProjectHeader() {
   } = useComic();
   const fileRef = useRef<HTMLInputElement>(null);
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const [dragOver, setDragOver] = useState(false);
+
+  const anchorHash = project?.style.anchorHash;
+
+  // Accept the first image from a drop or paste and upload it as the anchor.
+  function ingestImage(items: DataTransferItemList | null, files: FileList | null) {
+    const fromFiles = files
+      ? Array.from(files).find((f) => f.type.startsWith("image/"))
+      : undefined;
+    const fromItems = items
+      ? Array.from(items)
+          .find((it) => it.kind === "file" && it.type.startsWith("image/"))
+          ?.getAsFile() ?? undefined
+      : undefined;
+    const file = fromFiles ?? fromItems;
+    if (file) void uploadAnchor(file);
+    return !!file;
+  }
+
+  // Paste an image anywhere in the panel to set it as the anchor.
+  useEffect(() => {
+    function onPaste(e: ClipboardEvent) {
+      if (e.clipboardData && ingestImage(e.clipboardData.items, e.clipboardData.files)) {
+        e.preventDefault();
+      }
+    }
+    window.addEventListener("paste", onPaste);
+    return () => window.removeEventListener("paste", onPaste);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [anchorHash]);
 
   if (!project) return null;
   const { style } = project;
+
+  const dropHandlers = {
+    onDragOver: (e: React.DragEvent) => {
+      e.preventDefault();
+      setDragOver(true);
+    },
+    onDragLeave: (e: React.DragEvent) => {
+      e.preventDefault();
+      setDragOver(false);
+    },
+    onDrop: (e: React.DragEvent) => {
+      e.preventDefault();
+      setDragOver(false);
+      ingestImage(e.dataTransfer.items, e.dataTransfer.files);
+    },
+  };
 
   return (
     <div className="flex flex-col gap-5 p-4">
@@ -136,7 +182,7 @@ export function ProjectHeader() {
         </div>
 
         {/* Style anchor */}
-        <div className="flex flex-col gap-1.5">
+        <div className="flex flex-col gap-1.5" {...dropHandlers}>
           <span className="eyebrow">Style anchor (reference)</span>
           <input
             ref={fileRef}
@@ -150,7 +196,12 @@ export function ProjectHeader() {
             }}
           />
           {style.anchorHash ? (
-            <div className="flex items-center gap-2">
+            <div
+              className={cn(
+                "flex items-center gap-2 rounded-md transition-colors",
+                dragOver && "outline-2 outline-dashed outline-accent",
+              )}
+            >
               <img
                 src={api.thumbUrl(style.anchorHash)}
                 alt="anchor"
@@ -177,10 +228,22 @@ export function ProjectHeader() {
           ) : (
             <button
               onClick={() => fileRef.current?.click()}
-              className="flex items-center justify-center gap-1.5 rounded-md border border-dashed border-border px-2.5 py-2 text-[11px] text-faint transition-colors hover:border-accent/60 hover:text-muted"
+              className={cn(
+                "flex flex-col items-center justify-center gap-1.5 rounded-md border border-dashed px-2.5 py-3 text-[11px] transition-colors",
+                dragOver
+                  ? "border-accent bg-accent-soft text-accent"
+                  : "border-border text-faint hover:border-accent/60 hover:text-muted",
+              )}
             >
-              <Upload className="h-3.5 w-3.5" />
-              Upload an anchor image, or “★ set as anchor” on a frame
+              <Upload className="h-4 w-4" />
+              {dragOver ? (
+                "Drop image to set anchor"
+              ) : (
+                <span className="text-center">
+                  Drag &amp; drop, paste, or click to upload — or “★ set as
+                  anchor” on a frame
+                </span>
+              )}
             </button>
           )}
           <p className="text-[10px] leading-relaxed text-faint">
