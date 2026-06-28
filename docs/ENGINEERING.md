@@ -404,7 +404,8 @@ engine** (executor, content-addressed cache, asset store, WS progress) with zero
 
 **Model.** A `ComicProject` (`packages/shared/src/comic.ts`) holds a main `story`, shared `settings`,
 one `style` (theme text, model, **locked seed**, true **9:16** dims (768×1344, the SDXL/fal-friendly
-portrait bucket), optional **anchorHash** reference image, baked no-text `negative`), an editable
+portrait bucket), **weighted style references** (`style.anchors[]`, `{hash, weight}`), baked no-text
+`negative`), a reusable **reference library** (`project.library[]`, `{hash, label}`), an editable
 `promptTemplate`, and an ordered list of `frames`. Each frame: id, prompt, optional seed override,
 `resultHash` (the selected image), and `variants[]` (`{hash, seed}` iteration history, server-authoritative).
 
@@ -416,11 +417,68 @@ deterministically, then **drops dangling labels** when a token is empty (no `"Se
 pair with **frame-id-based node ids** (`gen-<id>`/`export-<id>`) so reorder/remove never remaps cache
 keys or misroutes progress events. Seed precedence: `frame.seed ?? style.seed`.
 
-**Consistency.** Shared style text + one locked seed + an optional anchor image. The anchor flows as
-`referenceHashes` → `NormalizedInput.references` (`packages/nodes/src/image.ts`). Only adapters that set
-`consumesReferences` actually map them; the node's `cacheKeyParams` **drops `referenceHashes` from the
-cache key otherwise**, so toggling an anchor on a model that ignores it (mock, plain t2i) is a cache hit,
-not a wasted re-bill for identical bytes.
+**Consistency.** Three stacked anchors: shared style text + one locked seed + reference images.
+References are **two-tier**: a project-wide set of **weighted style references** (`style.anchors[]`, each
+`{hash, weight}`, look) plus a **cast** of recurring **characters** (`project.cast[]`, each
+`{id, name, refHashes[]}`, identity). Both draw from a single reusable **reference library**
+(`project.library[]`) — upload or "bank" an image once, then attach it as a style reference and/or to any
+character without re-uploading; removing a library entry detaches every usage so nothing dangles. A third,
+**per-frame** lever is **scene continuity** (`frame.continuesFrameId`): one frame *continues* another
+frame's scene, so the source frame's current image (`frameImageHash` = `resultHash ?? newest variant`) is
+fed in as the **strongest, leading** reference at full weight — same setting/lighting/framing continuity,
+while this frame's prompt, composition, camera and cast move the action on. Self-links, unknown ids and
+not-yet-generated sources resolve to nothing, so reordering/deleting frames never breaks a run (the store
+also clears links pointing at a removed frame). Per
+frame, `frameReferences` (`packages/shared/src/comic.ts`) resolves the ordered, deduped, **weighted** set
+— the continuity reference first (full weight, so it dominates), then style references (each with its
+weight), then each active cast member's refs at full weight (first
+occurrence wins on dedup, so a shared image keeps its strongest/earliest weight) — gated by `frame.characterIds`
+(tri-state: `undefined` = whole cast, `[]` = none, `[ids]` = subset; unknown ids ignored so deleting a
+character never breaks a frame). That set flows as `references` (`[{hash, weight}]`) →
+`NormalizedInput.references` (`packages/nodes/src/image.ts`). **Back-compat:** the legacy single
+`style.anchorHash` is migrated on read by `styleReferences()` (used when `anchors` is empty), and the node
+still accepts the old flat `referenceHashes` + shared `referenceWeight` for direct graph users.
+
+The fal adapter **actually consumes** references on **Nano Banana Pro** and **FLUX.2 [pro]**, with two
+real-API subtleties the adapter handles (verified against fal's live schemas):
+- **Edit-endpoint routing.** On fal the base text-to-image endpoints reject image inputs; references live
+  on *separate* edit endpoints (`…/gemini-3-pro-image-preview/edit`, `…/flux-2-pro/edit`, field `image_urls`,
+  base64 data URIs OK). The adapter routes to the edit endpoint **iff a run supplies references**, otherwise
+  the base t2i endpoint. `consumesReferences` is **derived from `editEndpoint`** (not a hand-set flag), so a
+  model can never advertise references it has no endpoint to apply — the earlier "flag set on a t2i-only
+  endpoint" bug is now structurally impossible. References are capped at each endpoint's `maxReferences`
+  (FLUX.2 9, Nano Banana 5) with a warning, never a silent 422.
+- **Per-model dimension mapping.** Gemini/Nano Banana takes **no `image_size`** — it uses an `aspect_ratio`
+  enum. `geminiMapInput` maps the comic's 9:16 pixel dims to the nearest ratio, so a 9:16 comic is actually
+  9:16 on that model instead of its default square-ish. (FLUX/SDXL keep `image_size`.)
+
+Adapters with no edit endpoint (mock, Seedream, Qwen, Z-Image) ignore references, and the node's
+`cacheKeyParams` **drops both `references` and the legacy `referenceHashes` from the cache key for them**,
+so toggling an anchor on a model that can't use it is a cache hit, not a wasted re-bill. The sidebar shows
+a **capability-aware warning** when a cast/anchor (or LoRA) is set on a model that ignores it, pointing at
+a compatible model (`consumesReferences`/`consumesLoras` are surfaced in the model manifest).
+
+**Per-reference weight semantics:** each style reference carries an independent 0..1 `weight`, plumbed
+through `references` → `ReferenceInput.weight` to the adapter. fal's current edit endpoints accept no
+per-image weight field, so the **primary lever the vendor honors is order** (earlier = stronger) —
+`frameReferences` emits style refs first, in the artist's order. The stored weight drives that intent in
+the UI and reaches any adapter able to apply it (an IP-Adapter-style endpoint), rather than being discarded.
+
+The UI exposes this as: a **Style references** strip (multiple thumbnails, each with a weight slider;
+multi-image drag/drop & paste), a **Reference library** panel (rename/remove banked images, one-click
+`+ style` / `+<character>` to attach anywhere), a **Cast manager** (add/name characters, attach
+references), per-frame **membership pills** (which characters appear), and **"★ as style ref"** / **"as
+ref →"** one-clicks that bank a generated frame as a style reference or a character's reference — the
+"character sheet" workflow.
+
+A fourth anchor is **trained LoRAs**: `style.loras[]` (`{path, scale, name}`) are house-style adapters
+applied to every frame, compiled onto the gen node's `loras` param and mapped by LoRA-capable models —
+**`fal/flux-2-lora`** (FLUX.2 [dev], the recommended default), **`fal/qwen-image-lora`** (best in-image
+text, up to 3 merged LoRAs), and the legacy **`fal/flux-lora`** (FLUX.1) (`consumesLoras: true` → fal
+`loras: [{path, scale}]`). Like references, the node's `cacheKeyParams` drops `loras` from the cache key on
+models that ignore them, so a LoRA on a non-LoRA model is a cache hit. The sidebar has a **Style LoRAs**
+editor (URL/hub-id + scale per row). LoRA = the strongest *fixed-style* lock; references = per-shot
+*character identity* — they compose.
 
 **Iteration (artwork workflow).** Every successful generation appends a `{hash, seed}` variant
 (`unionVariants`, deduped, capped at `MAX_VARIANTS`). The **🎲 vary** action rolls a fresh seed and
@@ -451,8 +509,50 @@ grid with live per-frame status, regen, **vary**, variant strip, "set as anchor"
 and the client adopts the run's authoritative outputs; failures surface as **toasts** (sonner). WS
 events are scoped to the active run, so stale events can't resurrect cleared state.
 
-**Deferred follow-ups:** fal reference-image upload (a fal-storage spike + per-model `mapInput` that
-sets `consumesReferences` — until then the anchor is a no-op on paid models, but never a cost sink);
-Claude prompt-enhance; a reference port + Character node for canvas power users; partial-result capture
+**Deferred follow-ups:** a cheaper reference-capable model (Seedream v4 has a `…/v4/edit` endpoint — wire
+`editEndpoint` once its field/limit is confirmed, giving $0.03 character consistency vs Nano Banana's
+$0.15); reference weights (blocked on upstream support, see above); a reference
+port + Character node for canvas power users; partial-result capture
 for nodes that finish *after* an early run failure (their bytes persist in the asset store but aren't
 relinked — the executor would need to await in-flight on failure).
+
+## 17. AI Text Assist (implemented)
+
+A field-aware "optimize my text" layer over every prose input in the Comic Studio — enrich, fix
+grammar, or shorten the story, settings, style theme, per-frame prompts, the prompt template, and the
+negative prompt. It is **additive and opt-in**: when no text-model key is set the buttons simply don't
+render, so nothing depends on it.
+
+**Text/LLM provider abstraction.** A textual sibling to the image `ModelAdapter`:
+`TextAdapter` (`packages/providers/src/text/types.ts`) normalizes a neutral `ChatMessage[]` and hides
+each vendor's wire format; `TextProviderRegistry` mirrors `ProviderRegistry`. Phase-1 adapter is
+**Kimi / Moonshot** (`text/kimi.ts`), config-driven over Moonshot's OpenAI-compatible
+`/chat/completions` (`KIMI_KEY`, base `https://api.moonshot.ai/v1`, default model **`kimi-k2.6`**).
+K2.x are reasoning models: they emit hidden `reasoning_content` before the answer (ignored — `content`
+is the clean reply) and require `temperature: 1`, so the adapter pins that and uses a generous
+`max_tokens` (4096) so reasoning never starves the reply. Adding a vendor (Claude, OpenAI) = one
+adapter; the routes and UI don't change.
+
+**Shared config (single source of truth).** `packages/shared/src/assist.ts` holds the `AssistField`
+and `AssistMode` enums, per-field metadata (`defaultMode` + offered `modes` — e.g. the negative prompt
+only offers *enrich*, the template defaults to the safe *grammar*), the `AssistRequestSchema` (a
+`refine` rejects a mode not offered for the field), and **`buildAssistContext(project, field, frame?)`**
+— a deterministic builder that gathers the surrounding material most useful for revising *this* field
+(a frame prompt gets story + settings + style + its position + active cast names), so the model always
+knows which input it is editing.
+
+**Seeded prompts (server).** `apps/server/src/assist.ts` composes the system prompt from three
+config maps: a `GLOBAL_SYSTEM` (no-text 9:16 comic rules, output-only-the-value discipline,
+`{token}` preservation), a per-field `FIELD_PROMPTS` ("what this input is"), and a per-mode
+`MODE_PROMPTS` ("what to do"). Empty input + *enrich* is handled by the prompt itself — the model
+**drafts a first version from context**, so the AI can seed a starter prompt, not just polish one. The
+reply is run through `stripWrappingQuotes`. Routes: `POST /api/assist` (validated, key/model resolved
+server-side, vendor errors surfaced as 502/503) and `GET /api/assist/config` (availability probe).
+Text providers are wired in `runtime.ts` (`rt.textProviders`); the default model id is `kimi/k2`.
+
+**UI.** `AssistTextarea` (`apps/web/src/comic/AssistTextarea.tsx`) is the single integration point —
+a `Textarea` plus an inline `AiAssistButton` (sparkle = the field's default action, a caret opens the
+other modes). Callers swap `value`/`onChange` for `value`/`onValueChange`, which receives both manual
+edits and AI revisions (so the normal debounced autosave persists them). The button is gated on
+`assistAvailable` (probed once in `comicStore.init`), shows a spinner per in-flight mode, and toasts on
+error. Wired into all prose fields in `ProjectHeader` and the per-frame prompt in `FrameCard`.

@@ -3,10 +3,11 @@ import { promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { Executor, MemoryCache, type ExecutionServices } from "@vengine/core";
-import { ProviderRegistry, mockModel } from "@vengine/providers";
+import { ProviderRegistry, mockModel, falModels } from "@vengine/providers";
 import { AssetStore } from "@vengine/storage";
 import type { GraphDocument } from "@vengine/shared";
 import { createNodeRegistry } from "./index.js";
+import { createTextToImageNode, TextToImageParams } from "./image.js";
 
 let work: string;
 let services: ExecutionServices;
@@ -80,5 +81,37 @@ describe("end-to-end node pipeline", () => {
     // gen + resize cached; only the side-effecting export is left to run.
     expect(plan.nodes.find((n) => n.nodeId === "gen")?.willRun).toBe(false);
     expect(plan.nodes.find((n) => n.nodeId === "resize")?.willRun).toBe(false);
+  });
+});
+
+describe("text-to-image cacheKeyParams gating", () => {
+  const providers = new ProviderRegistry().registerAll([
+    mockModel, // consumes neither
+    falModels.fluxLora, // consumesLoras
+    falModels.nanoBananaPro, // consumesReferences
+  ]);
+  const node = createTextToImageNode(providers);
+  const key = (p: Record<string, unknown>) =>
+    node.cacheKeyParams!(TextToImageParams.parse(p)) as TextToImageParams;
+
+  it("drops loras for a model that can't use them, keeps them for one that can", () => {
+    expect(key({ model: "mock/gradient", prompt: "x", loras: [{ path: "a" }] }).loras).toBeUndefined();
+    expect(key({ model: "fal/flux-lora", prompt: "x", loras: [{ path: "a", scale: 1 }] }).loras).toEqual([
+      { path: "a", scale: 1 },
+    ]);
+  });
+
+  it("drops referenceHashes for a non-reference model, keeps them for a reference model", () => {
+    const h = "f".repeat(64);
+    expect(key({ model: "mock/gradient", prompt: "x", referenceHashes: [h] }).referenceHashes).toBeUndefined();
+    expect(
+      key({ model: "fal/nano-banana-pro", prompt: "x", referenceHashes: [h] }).referenceHashes,
+    ).toEqual([h]);
+  });
+
+  it("drops weighted references for a non-reference model, keeps them for a reference model", () => {
+    const refs = [{ hash: "a".repeat(64), weight: 0.7 }];
+    expect(key({ model: "mock/gradient", prompt: "x", references: refs }).references).toBeUndefined();
+    expect(key({ model: "fal/nano-banana-pro", prompt: "x", references: refs }).references).toEqual(refs);
   });
 });

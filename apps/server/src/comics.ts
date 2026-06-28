@@ -68,6 +68,30 @@ export function registerComicRoutes(app: Hono, rt: Runtime, broadcast: Broadcast
     return c.json(await rt.projects.save(parsed.data));
   });
 
+  // Delete a single generated image (variant) from a frame. Generation outputs are
+  // merge-protected on save, so dropping one needs an explicit read-modify-write.
+  app.delete("/api/comics/:id/frames/:frameId/variants/:hash", async (c) => {
+    const frameId = c.req.param("frameId");
+    const hash = c.req.param("hash");
+    try {
+      const saved = await rt.projects.update(c.req.param("id"), (project) => ({
+        ...project,
+        frames: project.frames.map((f) => {
+          if (f.id !== frameId) return f;
+          const variants = f.variants.filter((v) => v.hash !== hash);
+          // If the deleted image was the selection, fall back to the newest remaining.
+          const resultHash = f.resultHash === hash ? variants.at(-1)?.hash : f.resultHash;
+          return { ...f, variants, resultHash };
+        }),
+      }));
+      const frame = saved.frames.find((f) => f.id === frameId);
+      if (!frame) return c.json({ error: "frame not found" }, 404);
+      return c.json({ id: frame.id, resultHash: frame.resultHash, variants: frame.variants });
+    } catch {
+      return c.json({ error: "not found" }, 404);
+    }
+  });
+
   // Snapshot the current state.
   app.post("/api/comics/:id/snapshot", async (c) => {
     try {

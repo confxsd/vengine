@@ -243,6 +243,100 @@ body {
 }
 
 /* ─────────────────────────────────────────────────────────────────────
+   Frame render reveal — a one-shot celebration when a frame finishes.
+   A bright light travels around the border a few times while the freshly
+   rendered image does a quick brightness pop, signalling "just rendered".
+   ───────────────────────────────────────────────────────────────────── */
+/* Traveling border light — bright diagonal dashes that march around the
+   border ring. Driven by background-position (universally animatable) rather
+   than an @property angle, which some CSS pipelines won't register. */
+.frame-reveal::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  border-radius: inherit;
+  padding: 2.5px;
+  background-image: repeating-linear-gradient(
+    45deg,
+    transparent 0 9px,
+    var(--v-accent) 9px 13px,
+    #ffffff 13px 17px,
+    var(--v-accent) 17px 21px,
+    transparent 21px 30px
+  );
+  background-size: 30px 30px;
+  /* Mask out the centre so only the ring paints. */
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  /* Glow so the traveling light bleeds slightly past the edge. */
+  filter: drop-shadow(0 0 3px var(--v-accent));
+  pointer-events: none;
+  animation: frame-reveal-march 0.45s linear infinite;
+}
+
+@keyframes frame-reveal-march {
+  to {
+    background-position: 30px 0;
+  }
+}
+
+/* Inner glow pulse — accent halo hugging the inside edge. Inset so the
+   preview's `overflow-hidden` can't clip it (an outer glow would be cut off). */
+.frame-reveal::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  border-radius: inherit;
+  pointer-events: none;
+  box-shadow:
+    inset 0 0 0 1.5px var(--v-accent),
+    inset 0 0 14px 1px color-mix(in srgb, var(--v-accent) 75%, transparent);
+  animation: frame-reveal-glow 1.3s ease-out 2;
+}
+
+@keyframes frame-reveal-glow {
+  0% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+/* Brightness pop on the freshly revealed image. */
+.frame-reveal img {
+  animation: frame-reveal-pop 1.2s ease-out;
+}
+
+@keyframes frame-reveal-pop {
+  0% {
+    filter: brightness(1.85) saturate(1.2) contrast(1.06);
+  }
+  55% {
+    filter: brightness(1.15) saturate(1.05);
+  }
+  100% {
+    filter: brightness(1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .frame-reveal::after,
+  .frame-reveal::before,
+  .frame-reveal img {
+    animation: none;
+  }
+  .frame-reveal::before {
+    box-shadow: none;
+  }
+}
+
+/* ─────────────────────────────────────────────────────────────────────
    React Flow surface — themed against tokens (no hardcoded greys).
    ───────────────────────────────────────────────────────────────────── */
 .react-flow__background {

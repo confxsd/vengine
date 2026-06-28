@@ -39,3 +39,150 @@ describe("ProviderRegistry", () => {
     expect(cost).toBeCloseTo(0.02); // 1 MP * $0.02
   });
 });
+
+interface Captured {
+  body?: Record<string, unknown>;
+  /** The submit endpoint URL — reveals base-vs-edit routing. */
+  url?: string;
+}
+
+/** Mock fal's queue contract (submit → status → result → image download),
+ *  capturing the submitted request body + URL so routing/mapping is observable. */
+function mockFalFetch(captured: Captured): typeof fetch {
+  const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47]);
+  return (async (url: string | URL, init?: RequestInit): Promise<Response> => {
+    const u = String(url);
+    if (init?.method === "POST" && !u.includes("/requests/")) {
+      captured.body = JSON.parse(String(init.body));
+      captured.url = u;
+      return new Response(JSON.stringify({ request_id: "req-1" }), { status: 200 });
+    }
+    if (u.endsWith("/status")) {
+      return new Response(JSON.stringify({ status: "COMPLETED" }), { status: 200 });
+    }
+    if (u.includes("/requests/req-1")) {
+      return new Response(
+        JSON.stringify({ images: [{ url: "https://img/1.png", content_type: "image/png" }], seed: 7 }),
+        { status: 200 },
+      );
+    }
+    if (u === "https://img/1.png") return new Response(png, { status: 200 });
+    return new Response(`unexpected ${u}`, { status: 500 });
+  }) as typeof fetch;
+}
+
+describe("fal reference images", () => {
+  it("routes references to the /edit endpoint with data URIs, t2i otherwise", async () => {
+    // With references → edit endpoint + image_urls.
+    const withRefs: Captured = {};
+    const out = await falModels.nanoBananaPro.run(
+      { prompt: "hero", references: [{ bytes: new Uint8Array([1, 2, 3]), mime: "image/png" }] },
+      { apiKey: "k", fetch: mockFalFetch(withRefs) },
+    );
+    expect(falModels.nanoBananaPro.consumesReferences).toBe(true);
+    expect(withRefs.url).toContain("/gemini-3-pro-image-preview/edit");
+    const urls = withRefs.body?.image_urls as string[];
+    expect(urls).toHaveLength(1);
+    expect(urls[0]).toMatch(/^data:image\/png;base64,/);
+    expect(out.seed).toBe(7);
+
+    // Without references → base text-to-image endpoint, no image field.
+    const noRefs: Captured = {};
+    await falModels.nanoBananaPro.run({ prompt: "hero" }, { apiKey: "k", fetch: mockFalFetch(noRefs) });
+    expect(noRefs.url).toContain("/gemini-3-pro-image-preview");
+    expect(noRefs.url).not.toContain("/edit");
+    expect(noRefs.body?.image_urls).toBeUndefined();
+  });
+
+  it("flux-2 routes references to its /edit endpoint", async () => {
+    const captured: Captured = {};
+    await falModels.fluxProV2.run(
+      { prompt: "x", references: [{ bytes: new Uint8Array([9]), mime: "image/png" }] },
+      { apiKey: "k", fetch: mockFalFetch(captured) },
+    );
+    expect(captured.url).toContain("/flux-2-pro/edit");
+    expect((captured.body?.image_urls as string[]).length).toBe(1);
+  });
+
+  it("caps references at the model's limit", async () => {
+    const captured: Captured = {};
+    const many = Array.from({ length: 8 }, (_, i) => ({
+      bytes: new Uint8Array([i]),
+      mime: "image/png",
+    }));
+    await falModels.nanoBananaPro.run(
+      { prompt: "x", references: many },
+      { apiKey: "k", fetch: mockFalFetch(captured) },
+    );
+    expect((captured.body?.image_urls as string[]).length).toBe(5); // maxReferences
+  });
+
+  it("non-edit models never advertise or receive references", async () => {
+    expect(falModels.seedream.consumesReferences).toBe(false);
+    const captured: Captured = {};
+    await falModels.seedream.run(
+      { prompt: "x", references: [{ bytes: new Uint8Array([1]), mime: "image/png" }] },
+      { apiKey: "k", fetch: mockFalFetch(captured) },
+    );
+    expect(captured.url).not.toContain("/edit");
+    expect(captured.body?.image_urls).toBeUndefined();
+  });
+});
+
+describe("gemini dimension mapping", () => {
+  it("maps a 9:16 pixel size to aspect_ratio, not image_size", async () => {
+    const captured: Captured = {};
+    await falModels.nanoBananaPro.run(
+      { prompt: "x", width: 768, height: 1344 },
+      { apiKey: "k", fetch: mockFalFetch(captured) },
+    );
+    expect(captured.body?.aspect_ratio).toBe("9:16");
+    expect(captured.body?.image_size).toBeUndefined(); // gemini has no image_size
+    expect(captured.body?.negative_prompt).toBeUndefined(); // nor negative prompt
+  });
+
+  it("picks the nearest ratio for non-exact sizes (square-ish → 1:1)", async () => {
+    const captured: Captured = {};
+    await falModels.nanoBananaPro.run(
+      { prompt: "x", width: 1024, height: 1000 },
+      { apiKey: "k", fetch: mockFalFetch(captured) },
+    );
+    expect(captured.body?.aspect_ratio).toBe("1:1");
+  });
+});
+
+describe("fal LoRA", () => {
+  it("flux-lora forwards loras (defaulting scale) and advertises consumption", async () => {
+    const captured: Captured = {};
+    await falModels.fluxLora.run(
+      { prompt: "x", loras: [{ path: "https://h/a.safetensors", scale: 0.8 }, { path: "b" }] },
+      { apiKey: "k", fetch: mockFalFetch(captured) },
+    );
+    expect(falModels.fluxLora.consumesLoras).toBe(true);
+    expect(captured.body?.loras).toEqual([
+      { path: "https://h/a.safetensors", scale: 0.8 },
+      { path: "b", scale: 1 }, // missing scale defaults to full strength
+    ]);
+  });
+
+  it("flux-2-lora routes to the FLUX.2 LoRA endpoint and forwards loras", async () => {
+    const captured: Captured = {};
+    await falModels.flux2Lora.run(
+      { prompt: "x", loras: [{ path: "https://h/style.safetensors", scale: 0.9 }] },
+      { apiKey: "k", fetch: mockFalFetch(captured) },
+    );
+    expect(captured.url).toContain("/flux-2/lora");
+    expect(falModels.flux2Lora.consumesLoras).toBe(true);
+    expect(captured.body?.loras).toEqual([{ path: "https://h/style.safetensors", scale: 0.9 }]);
+  });
+
+  it("non-LoRA models never emit a loras field", async () => {
+    const captured: Captured = {};
+    await falModels.seedream.run(
+      { prompt: "x", loras: [{ path: "ignored" }] },
+      { apiKey: "k", fetch: mockFalFetch(captured) },
+    );
+    expect(captured.body?.loras).toBeUndefined();
+    expect(falModels.seedream.consumesLoras).toBeUndefined();
+  });
+});

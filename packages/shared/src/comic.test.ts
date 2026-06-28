@@ -7,6 +7,9 @@ import {
   exportNodeId,
   frameIdFromNodeId,
   unionVariants,
+  frameReferenceHashes,
+  frameReferences,
+  styleReferences,
   MAX_VARIANTS,
   DEFAULT_NEGATIVE,
   DEFAULT_WIDTH,
@@ -116,14 +119,183 @@ describe("compileComic", () => {
     expect(g.nodes.find((n) => n.id === genNodeId("b"))!.params.seed).toBe(99); // frame override
   });
 
-  it("includes the anchor hash in referenceHashes only when set", () => {
+  it("emits weighted references only when set", () => {
     const anchor = "f".repeat(64);
-    const withAnchor = compileComic(project({ style: { ...project().style, anchorHash: anchor } }));
-    expect(withAnchor.nodes.find((n) => n.id === genNodeId("a"))!.params.referenceHashes).toEqual([
-      anchor,
+    const withAnchor = compileComic(
+      project({ style: { ...project().style, anchors: [{ hash: anchor, weight: 0.6 }] } }),
+    );
+    expect(withAnchor.nodes.find((n) => n.id === genNodeId("a"))!.params.references).toEqual([
+      { hash: anchor, weight: 0.6 },
     ]);
     const without = compileComic(project());
-    expect(without.nodes.find((n) => n.id === genNodeId("a"))!.params.referenceHashes).toBeUndefined();
+    expect(without.nodes.find((n) => n.id === genNodeId("a"))!.params.references).toBeUndefined();
+  });
+
+  it("migrates a legacy single anchorHash into a full-weight reference", () => {
+    const anchor = "e".repeat(64);
+    const g = compileComic(project({ style: { ...project().style, anchorHash: anchor } }));
+    expect(g.nodes.find((n) => n.id === genNodeId("a"))!.params.references).toEqual([
+      { hash: anchor, weight: 1 },
+    ]);
+  });
+
+  it("merges cast character refs (full weight) after weighted style anchors, deduped", () => {
+    const anchor = "a".repeat(64);
+    const hero = "b".repeat(64);
+    const villain = "c".repeat(64);
+    const p = project({
+      style: { ...project().style, anchors: [{ hash: anchor, weight: 0.8 }] },
+      cast: [
+        { id: "hero", name: "Hero", refHashes: [hero, anchor] }, // anchor reused → must dedupe (keeps 0.8)
+        { id: "villain", name: "Villain", refHashes: [villain] },
+      ],
+      // frame "a" has no characterIds → whole cast; frame "b" selects just the hero.
+      frames: [
+        { id: "a", prompt: "both meet on the bridge" },
+        { id: "b", prompt: "the hero alone", characterIds: ["hero"] },
+      ],
+    });
+    const g = compileComic(p);
+    expect(g.nodes.find((n) => n.id === genNodeId("a"))!.params.references).toEqual([
+      { hash: anchor, weight: 0.8 },
+      { hash: hero, weight: 1 },
+      { hash: villain, weight: 1 },
+    ]);
+    expect(g.nodes.find((n) => n.id === genNodeId("b"))!.params.references).toEqual([
+      { hash: anchor, weight: 0.8 },
+      { hash: hero, weight: 1 },
+    ]);
+  });
+
+  it("styleReferences migrates legacy anchorHash but prefers explicit anchors", () => {
+    const legacy = "a".repeat(64);
+    const a = "b".repeat(64);
+    expect(styleReferences(project({ style: { ...project().style, anchorHash: legacy } }).style)).toEqual(
+      [{ hash: legacy, weight: 1 }],
+    );
+    // explicit anchors win over a stale legacy field
+    const both = project({
+      style: { ...project().style, anchorHash: legacy, anchors: [{ hash: a, weight: 0.5 }] },
+    });
+    expect(styleReferences(both.style)).toEqual([{ hash: a, weight: 0.5 }]);
+    expect(frameReferences(both, both.frames[0]!)).toEqual([{ hash: a, weight: 0.5 }]);
+  });
+
+  it("treats an empty characterIds as 'no characters' (style anchor still applies)", () => {
+    const anchor = "a".repeat(64);
+    const hero = "b".repeat(64);
+    const p = project({
+      style: { ...project().style, anchorHash: anchor },
+      cast: [{ id: "hero", name: "Hero", refHashes: [hero] }],
+      frames: [{ id: "a", prompt: "an empty rain-soaked alley", characterIds: [] }],
+    });
+    expect(frameReferenceHashes(p, p.frames[0]!)).toEqual([anchor]);
+  });
+
+  it("ignores unknown character ids so removing a character never breaks a frame", () => {
+    const hero = "b".repeat(64);
+    const p = project({
+      cast: [{ id: "hero", name: "Hero", refHashes: [hero] }],
+      frames: [{ id: "a", prompt: "x", characterIds: ["hero", "ghost-deleted"] }],
+    });
+    expect(frameReferenceHashes(p, p.frames[0]!)).toEqual([hero]);
+  });
+
+  it("feeds the continued frame's image in as the leading, full-weight reference", () => {
+    const anchor = "a".repeat(64);
+    const sourceImg = "d".repeat(64);
+    const p = project({
+      style: { ...project().style, anchors: [{ hash: anchor, weight: 0.5 }] },
+      frames: [
+        { id: "a", prompt: "a wide shot of the plaza", resultHash: sourceImg },
+        { id: "b", prompt: "same plaza, the crowd now scatters", continuesFrameId: "a" },
+      ],
+    });
+    // Continuity leads (strongest), full weight, before the style anchor.
+    expect(frameReferences(p, p.frames[1]!)).toEqual([
+      { hash: sourceImg, weight: 1 },
+      { hash: anchor, weight: 0.5 },
+    ]);
+    // The source frame itself has no continuation, so only the style anchor applies.
+    expect(frameReferences(p, p.frames[0]!)).toEqual([{ hash: anchor, weight: 0.5 }]);
+  });
+
+  it("uses the continued frame's newest variant when no result is selected", () => {
+    const v1 = "1".repeat(64);
+    const v2 = "2".repeat(64);
+    const p = project({
+      frames: [
+        { id: "a", prompt: "x", variants: [{ hash: v1, seed: 1 }, { hash: v2, seed: 2 }] },
+        { id: "b", prompt: "y", continuesFrameId: "a" },
+      ],
+    });
+    expect(frameReferenceHashes(p, p.frames[1]!)).toEqual([v2]); // newest variant
+  });
+
+  it("ignores a self-link, an unknown target, or a target with no image yet", () => {
+    const self = project({ frames: [{ id: "a", prompt: "x", continuesFrameId: "a" }] });
+    expect(frameReferenceHashes(self, self.frames[0]!)).toEqual([]);
+
+    const missing = project({ frames: [{ id: "a", prompt: "x", continuesFrameId: "ghost" }] });
+    expect(frameReferenceHashes(missing, missing.frames[0]!)).toEqual([]);
+
+    const noImage = project({
+      frames: [
+        { id: "a", prompt: "not generated yet" },
+        { id: "b", prompt: "y", continuesFrameId: "a" },
+      ],
+    });
+    expect(frameReferenceHashes(noImage, noImage.frames[1]!)).toEqual([]);
+  });
+
+  it("dedupes when the continued image is also a style anchor (keeps its lead)", () => {
+    const shared = "e".repeat(64);
+    const p = project({
+      style: { ...project().style, anchors: [{ hash: shared, weight: 0.3 }] },
+      frames: [
+        { id: "a", prompt: "x", resultHash: shared },
+        { id: "b", prompt: "y", continuesFrameId: "a" },
+      ],
+    });
+    // First occurrence wins: continuity's full weight, sent once.
+    expect(frameReferences(p, p.frames[1]!)).toEqual([{ hash: shared, weight: 1 }]);
+  });
+
+  it("bakes the continuity reference into the compiled generation node", () => {
+    const sourceImg = "c".repeat(64);
+    const p = project({
+      frames: [
+        { id: "a", prompt: "establishing shot", resultHash: sourceImg },
+        { id: "b", prompt: "the action continues", continuesFrameId: "a" },
+      ],
+    });
+    const g = compileComic(p);
+    expect(g.nodes.find((n) => n.id === genNodeId("b"))!.params.references).toEqual([
+      { hash: sourceImg, weight: 1 },
+    ]);
+  });
+
+  it("emits non-blank house-style LoRAs (path+scale only) on every frame", () => {
+    const p = project({
+      style: {
+        ...project().style,
+        loras: [
+          { path: "https://h/style.safetensors", scale: 0.7, name: "My style" },
+          { path: "   ", scale: 1, name: "blank — dropped" },
+        ],
+      },
+    });
+    const g = compileComic(p);
+    for (const id of ["a", "b"]) {
+      expect(g.nodes.find((n) => n.id === genNodeId(id))!.params.loras).toEqual([
+        { path: "https://h/style.safetensors", scale: 0.7 }, // name stripped, blank row dropped
+      ]);
+    }
+  });
+
+  it("omits loras entirely when none are configured", () => {
+    const g = compileComic(project());
+    expect(g.nodes.find((n) => n.id === genNodeId("a"))!.params.loras).toBeUndefined();
   });
 
   it("routes export nodes to the requested dir/format", () => {

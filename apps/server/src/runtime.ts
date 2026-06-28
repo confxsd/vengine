@@ -1,5 +1,11 @@
 import { Executor, type ExecutionServices, type NodeRegistry } from "@vengine/core";
-import { ProviderRegistry, mockModel, falModels } from "@vengine/providers";
+import {
+  ProviderRegistry,
+  TextProviderRegistry,
+  mockModel,
+  falModels,
+  kimiModels,
+} from "@vengine/providers";
 import { AssetStore, ProjectStore, FileOutputCache } from "@vengine/storage";
 import { createNodeRegistry } from "@vengine/nodes";
 
@@ -10,6 +16,8 @@ import { createNodeRegistry } from "@vengine/nodes";
  */
 export interface Runtime {
   providers: ProviderRegistry;
+  /** Text/LLM adapters (prompt assist, intelligence features). */
+  textProviders: TextProviderRegistry;
   registry: NodeRegistry;
   assets: AssetStore;
   projects: ProjectStore;
@@ -21,6 +29,9 @@ export function createRuntime(): Runtime {
   const providers = new ProviderRegistry()
     .register(mockModel)
     .registerAll(Object.values(falModels));
+
+  // Text models power AI text assist (KIMI_KEY); empty key just disables the feature.
+  const textProviders = new TextProviderRegistry().registerAll(Object.values(kimiModels));
 
   const registry = createNodeRegistry({ providers });
   const assets = new AssetStore();
@@ -34,7 +45,7 @@ export function createRuntime(): Runtime {
     getApiKey: (provider) => process.env[`${provider.toUpperCase()}_KEY`],
   };
 
-  return { providers, registry, assets, projects, executor, services };
+  return { providers, textProviders, registry, assets, projects, executor, services };
 }
 
 /** Structural node manifest for the client palette/inspector (no executor logic). */
@@ -54,6 +65,10 @@ export function modelManifest(providers: ProviderRegistry) {
     provider: m.provider,
     displayName: m.displayName,
     capabilities: m.capabilities,
+    // Whether the adapter actually applies references/LoRAs (drives capability-aware
+    // UI warnings: a cast/anchor or LoRA on a model that ignores it is a silent no-op).
+    consumesReferences: m.consumesReferences ?? false,
+    consumesLoras: m.consumesLoras ?? false,
     pricing: m.pricing,
   }));
 }

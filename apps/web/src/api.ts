@@ -1,6 +1,14 @@
-import type { AssetRef, ComicProject, GraphDocument } from "@vengine/shared";
+import type {
+  AssetRef,
+  AssistConfig,
+  AssistRequest,
+  AssistResponse,
+  ComicProject,
+  GraphDocument,
+} from "@vengine/shared";
 import type {
   ComicRunResult,
+  FrameOutputDelta,
   ModelInfo,
   NodeManifestEntry,
   NodeProgressEvent,
@@ -58,6 +66,10 @@ export const api = {
     post<RunPlan>(`/api/comics/${id}/plan`, { quality, frameIds }),
   runComic: (id: string, quality?: "preview" | "final", frameIds?: string[]) =>
     post<ComicRunResult>(`/api/comics/${id}/run`, { quality, frameIds }),
+  deleteVariant: (id: string, frameId: string, hash: string) =>
+    fetch(`/api/comics/${id}/frames/${frameId}/variants/${hash}`, { method: "DELETE" }).then(
+      json<FrameOutputDelta>,
+    ),
   snapshotComic: (id: string) => post<SnapshotEntry>(`/api/comics/${id}/snapshot`),
   snapshots: (id: string) => fetch(`/api/comics/${id}/snapshots`).then(json<SnapshotEntry[]>),
   cancelRun: (runId: string) =>
@@ -68,6 +80,10 @@ export const api = {
     form.append("file", file);
     return fetch("/api/assets", { method: "POST", body: form }).then(json<AssetRef>);
   },
+
+  // ── AI text assist ──────────────────────────────────────────────────────────
+  assistConfig: () => fetch("/api/assist/config").then(json<AssistConfig>),
+  assist: (req: AssistRequest) => post<AssistResponse>("/api/assist", req),
 };
 
 /** Subscribe to live run progress over WebSocket. Returns an unsubscribe fn. */

@@ -34,6 +34,14 @@ export interface ReferenceInput extends ImageBytes {
   weight?: number;
 }
 
+/** A hosted LoRA adapter to apply during generation (trained style/character). */
+export interface LoraInput {
+  /** URL or hub id of the weights (a CivitAI/HF `.safetensors` URL, or fal-hosted path). */
+  path: string;
+  /** Influence scale (typically ~0–1.5; 1 = full strength). */
+  scale?: number;
+}
+
 /** Neutral, vendor-agnostic generation input. Adapters map this to their API. */
 export interface NormalizedInput {
   prompt?: string;
@@ -49,6 +57,8 @@ export interface NormalizedInput {
   mask?: ImageBytes;
   /** Reference images for consistency (character/style). */
   references?: ReferenceInput[];
+  /** Hosted LoRAs to apply (trained style/character), for models that support them. */
+  loras?: LoraInput[];
   /** Cheap/fast path when "preview". */
   quality?: "preview" | "final";
   /** Escape hatch for model-specific params not covered above. */
@@ -89,6 +99,13 @@ export interface ModelAdapter {
    * pointlessly bust the content-addressed cache (and re-bill) for identical output.
    */
   consumesReferences?: boolean;
+  /**
+   * True only when `run` actually maps `NormalizedInput.loras` onto the vendor
+   * request. Same contract as `consumesReferences`: the generation node drops
+   * `loras` from the cache key on models that ignore them, so toggling a LoRA on a
+   * non-LoRA model is a cache hit, not a wasted re-bill.
+   */
+  consumesLoras?: boolean;
   /** Cheap, no-network cost estimate used by the planner's dry-run. */
   estimateCost(input: NormalizedInput): number;
   /** Submit + resolve to a finished asset, hiding async/polling/webhooks. */

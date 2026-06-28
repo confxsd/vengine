@@ -1,6 +1,8 @@
 import type {
+  ComicAsset,
   ComicFrame,
   ComicProject,
+  ComicReference,
   ComicStyle,
   ComicVariant,
   NodeProgressEvent,
@@ -10,8 +12,10 @@ import type {
 export type {
   NodeProgressEvent,
   NodeRunStatus,
+  ComicAsset,
   ComicProject,
   ComicFrame,
+  ComicReference,
   ComicStyle,
   ComicVariant,
 };
@@ -30,12 +34,19 @@ export interface SnapshotEntry {
   createdAt: string;
 }
 
+/** A frame's server-authoritative generation outputs (selection + history). */
+export interface FrameOutputDelta {
+  id: string;
+  resultHash?: string;
+  variants: ComicVariant[];
+}
+
 /** Response of POST /api/comics/:id/run. */
 export interface ComicRunResult {
   runId: string;
   status: "pending" | "running" | "done" | "error" | "cancelled";
   error?: string;
-  frames: { id: string; resultHash?: string; variants: ComicVariant[] }[];
+  frames: FrameOutputDelta[];
 }
 
 export interface PortInfo {
@@ -59,6 +70,10 @@ export interface ModelInfo {
   provider: string;
   displayName: string;
   capabilities: string[];
+  /** True when the model actually applies reference images (style anchor / cast). */
+  consumesReferences: boolean;
+  /** True when the model actually applies LoRAs. */
+  consumesLoras: boolean;
   pricing: { kind: string; usd: number };
 }
 

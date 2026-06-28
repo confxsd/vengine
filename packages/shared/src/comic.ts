@@ -46,6 +46,21 @@ export const ComicVariantSchema = z.object({
 });
 export type ComicVariant = z.infer<typeof ComicVariantSchema>;
 
+/**
+ * A recurring character in the comic. Its `refHashes` are identity-establishing
+ * images (an uploaded portrait, or a generated "character sheet" frame's output)
+ * fed as references to every frame the character appears in — the lever for
+ * character consistency, distinct from the project-wide style anchor.
+ */
+export const ComicCharacterSchema = z.object({
+  /** Stable id frames reference via `frame.characterIds`. */
+  id: z.string().min(1),
+  name: z.string().default(""),
+  /** Identity reference image hashes (most-distinctive first; models weight earlier refs higher). */
+  refHashes: z.array(z.string().length(64)).default([]),
+});
+export type ComicCharacter = z.infer<typeof ComicCharacterSchema>;
+
 export const ComicFrameSchema = z.object({
   /** Stable id (never the array index): node ids + WS routing + result mapping key off this. */
   id: z.string().min(1),
@@ -53,6 +68,22 @@ export const ComicFrameSchema = z.object({
   prompt: z.string().default(""),
   /** Optional per-frame seed; falls back to the project's locked style seed. */
   seed: z.number().int().optional(),
+  /**
+   * Which cast members appear in this frame. Tri-state by design:
+   *   undefined → the whole cast (the common case: a protagonist in every panel),
+   *   []        → no characters (e.g. an establishing landscape),
+   *   [ids…]    → exactly that subset.
+   * Unknown ids are ignored, so removing a character never breaks a frame.
+   */
+  characterIds: z.array(z.string()).optional(),
+  /**
+   * Scene-continuity link: the id of another frame this one *continues* from. That
+   * source frame's current image is fed as the strongest, leading reference, so this
+   * frame stays in the same scene (setting, lighting, framing continuity) while its
+   * prompt, composition, camera angle and cast move the action on. Self-links and
+   * unknown ids are ignored, so reordering or removing frames never breaks a run.
+   */
+  continuesFrameId: z.string().optional(),
   /** The currently selected/displayed image (a hash from `variants`). The artist
    *  picks it; a run sets it to the freshest generation. */
   resultHash: z.string().length(64).optional(),
@@ -78,6 +109,54 @@ export function unionVariants(
   return merged.length > MAX_VARIANTS ? merged.slice(merged.length - MAX_VARIANTS) : merged;
 }
 
+/** Default per-reference influence weight (full strength). */
+export const DEFAULT_REFERENCE_WEIGHT = 1;
+
+/** Influence weight of a scene-continuity reference. Full strength by design: a
+ *  continuation must lock the prior scene hard, so it leads at maximum weight. */
+export const DEFAULT_CONTINUITY_WEIGHT = 1;
+
+/** A frame's current still image: the selected result, else its newest variant. */
+export function frameImageHash(frame: ComicFrame): string | undefined {
+  return frame.resultHash ?? frame.variants.at(-1)?.hash;
+}
+
+/**
+ * A reference image banked in the project's reusable library: upload (or "bank" a
+ * generated frame) once, then attach the same image as a style reference and/or to
+ * any number of characters without re-uploading. The library is the single pool of
+ * reference material; style anchors and character casts point into it by hash.
+ * `label` is a UI-only name to tell entries apart.
+ */
+export const ComicAssetSchema = z.object({
+  hash: z.string().length(64),
+  label: z.string().default(""),
+});
+export type ComicAsset = z.infer<typeof ComicAssetSchema>;
+
+/**
+ * A weighted style reference: an image hash plus how strongly it should steer the
+ * look (0..1). Order also matters — models weight earlier references more — so the
+ * array order is the coarse lever and `weight` the fine adjustment.
+ */
+export const ComicReferenceSchema = z.object({
+  hash: z.string().length(64),
+  weight: z.number().min(0).max(1).default(DEFAULT_REFERENCE_WEIGHT),
+});
+export type ComicReference = z.infer<typeof ComicReferenceSchema>;
+
+/**
+ * A trained LoRA applied to every frame on a LoRA-capable model — the strongest
+ * lock for a fixed house style. `name` is a UI label only; `path`/`scale` are what
+ * run. Consumed only by models that set `consumesLoras` (e.g. `fal/flux-2-lora`).
+ */
+export const ComicLoraSchema = z.object({
+  path: z.string().default(""),
+  scale: z.number().default(1),
+  name: z.string().default(""),
+});
+export type ComicLora = z.infer<typeof ComicLoraSchema>;
+
 export const ComicStyleSchema = z.object({
   /** Broad visual style theme applied to every frame (the consistency anchor in text form). */
   theme: z.string().default(""),
@@ -87,8 +166,20 @@ export const ComicStyleSchema = z.object({
   seed: z.number().int().default(42),
   width: z.number().int().positive().default(DEFAULT_WIDTH),
   height: z.number().int().positive().default(DEFAULT_HEIGHT),
-  /** Optional style-anchor reference image (asset hash), fed into every frame. */
+  /**
+   * Weighted style-reference images fed into every frame (look consistency).
+   * Ordered (earlier = stronger) and each independently weighted, so an artist can
+   * blend several look references. Superseded the single `anchorHash` below.
+   */
+  anchors: z.array(ComicReferenceSchema).default([]),
+  /**
+   * @deprecated Legacy single style anchor. Read through `styleReferences()`, which
+   * migrates it into `anchors` when `anchors` is empty, so old projects keep working
+   * and new writes only ever touch `anchors`.
+   */
   anchorHash: z.string().length(64).optional(),
+  /** Trained LoRAs applied to every frame (on LoRA-capable models). */
+  loras: z.array(ComicLoraSchema).default([]),
   negative: z.string().default(DEFAULT_NEGATIVE),
 });
 export type ComicStyle = z.infer<typeof ComicStyleSchema>;
@@ -101,6 +192,14 @@ export const ComicProjectSchema = z.object({
   story: z.string().default(""),
   /** Shared world/setting details. */
   settings: z.string().default(""),
+  /** Recurring characters reused across frames for identity consistency. */
+  cast: z.array(ComicCharacterSchema).default([]),
+  /**
+   * Reusable pool of reference images (uploaded or banked from a frame). The artist
+   * draws style anchors and character refs from here; entries are content-addressed,
+   * so the same image is stored once however many places reference it.
+   */
+  library: z.array(ComicAssetSchema).default([]),
   style: ComicStyleSchema.default({}),
   promptTemplate: z.string().default(DEFAULT_TEMPLATE),
   frames: z.array(ComicFrameSchema).default([]),
@@ -144,6 +243,69 @@ export function composeFramePrompt(project: ComicProject, frame: ComicFrame): st
   return kept.join("\n").replace(/\n{3,}/g, "\n\n").trim();
 }
 
+/**
+ * Effective weighted style references for a project: the multi-anchor `anchors`
+ * list, or the legacy single `anchorHash` migrated to a full-weight reference when
+ * `anchors` is empty. The one place that reconciles old + new projects, so every
+ * reader (compiler, UI preview, warnings) sees the same set.
+ */
+export function styleReferences(style: ComicStyle): ComicReference[] {
+  if (style.anchors.length) return style.anchors;
+  return style.anchorHash
+    ? [{ hash: style.anchorHash, weight: DEFAULT_REFERENCE_WEIGHT }]
+    : [];
+}
+
+/**
+ * The current image of the frame this one continues, as a single full-weight
+ * reference (empty when there's no link, it's a self-link, the target was removed,
+ * or the target has no image yet). Resolved here so the compiler and UI agree.
+ */
+export function continuityReferences(
+  project: ComicProject,
+  frame: ComicFrame,
+): ComicReference[] {
+  const { continuesFrameId } = frame;
+  if (!continuesFrameId || continuesFrameId === frame.id) return [];
+  const source = project.frames.find((f) => f.id === continuesFrameId);
+  const hash = source && frameImageHash(source);
+  return hash ? [{ hash, weight: DEFAULT_CONTINUITY_WEIGHT }] : [];
+}
+
+/**
+ * The full ordered, weighted reference set for one frame: the scene-continuity
+ * reference first (this frame continues another's scene, so it leads at full
+ * weight), then the project's style references (look consistency), then the
+ * identity refs of each cast member active in the frame (character consistency,
+ * full weight). Order matters — models weight earlier references more — so
+ * continuity leads, style follows, characters last. Deduped by hash (first wins,
+ * so an image used in two roles keeps its strongest/earliest weight and is sent
+ * once). Shared by the compiler and the UI preview so what runs is exactly what
+ * the artist sees.
+ */
+export function frameReferences(project: ComicProject, frame: ComicFrame): ComicReference[] {
+  const ids = frame.characterIds;
+  const activeCast =
+    ids === undefined ? project.cast : project.cast.filter((c) => ids.includes(c.id));
+  const characterRefs = activeCast.flatMap((c) =>
+    c.refHashes.map((hash) => ({ hash, weight: DEFAULT_REFERENCE_WEIGHT })),
+  );
+  const byHash = new Map<string, ComicReference>();
+  for (const ref of [
+    ...continuityReferences(project, frame),
+    ...styleReferences(project.style),
+    ...characterRefs,
+  ]) {
+    if (!byHash.has(ref.hash)) byHash.set(ref.hash, ref);
+  }
+  return [...byHash.values()];
+}
+
+/** Just the ordered, deduped reference hashes for a frame (drops weights). */
+export function frameReferenceHashes(project: ComicProject, frame: ComicFrame): string[] {
+  return frameReferences(project, frame).map((ref) => ref.hash);
+}
+
 export interface CompileComicOptions {
   /** Directory the export nodes write frame images to (e.g. the project's frames/ dir). */
   exportDir?: string;
@@ -163,7 +325,10 @@ export function compileComic(
 ): GraphDocument {
   const { style } = project;
   const format = opts.format ?? "png";
-  const referenceHashes = style.anchorHash ? [style.anchorHash] : [];
+  // House-style LoRAs shared by every frame (drop blank-path rows; only path+scale run).
+  const loras = style.loras
+    .filter((l) => l.path.trim())
+    .map((l) => ({ path: l.path, scale: l.scale }));
 
   const nodes: GraphDocument["nodes"] = [];
   const edges: GraphDocument["edges"] = [];
@@ -172,6 +337,7 @@ export function compileComic(
     const gid = genNodeId(frame.id);
     const eid = exportNodeId(frame.id);
     const x = i * 360;
+    const references = frameReferences(project, frame);
 
     nodes.push({
       id: gid,
@@ -184,7 +350,8 @@ export function compileComic(
         width: style.width,
         height: style.height,
         seed: frame.seed ?? style.seed,
-        ...(referenceHashes.length ? { referenceHashes } : {}),
+        ...(references.length ? { references } : {}),
+        ...(loras.length ? { loras } : {}),
       },
       title: `Frame ${i + 1}`,
     });

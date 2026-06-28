@@ -8,6 +8,7 @@ import { z } from "zod";
 import { GraphDocumentSchema, type NodeProgressEvent } from "@vengine/shared";
 import { createRuntime, modelManifest, nodeManifest } from "./runtime.js";
 import { registerComicRoutes } from "./comics.js";
+import { registerAssistRoutes } from "./assist.js";
 
 // Load secrets from a .env file (server cwd, then up to the repo root) into
 // process.env before anything reads a key. Real env vars always take precedence.
@@ -40,12 +41,22 @@ function broadcast(event: NodeProgressEvent & { kind?: string }): void {
   }
 }
 
+app.get("/", (c) =>
+  c.json({
+    name: "vengine server",
+    ok: true,
+    endpoints: ["/api/health", "/api/models", "/api/nodes", "/api/plan", "/api/run", "/api/assist", "/ws"],
+  }),
+);
 app.get("/api/health", (c) => c.json({ ok: true }));
 app.get("/api/models", (c) => c.json(modelManifest(rt.providers)));
 app.get("/api/nodes", (c) => c.json(nodeManifest(rt.registry)));
 
 // Comic Studio: project CRUD, snapshots, compile-and-run, asset upload.
 registerComicRoutes(app, rt, broadcast);
+
+// AI text assist: optimize/enrich/fix prompts and prose fields.
+registerAssistRoutes(app, rt);
 
 const RunBody = z.object({
   graph: GraphDocumentSchema,
@@ -123,6 +134,6 @@ app.get(
 );
 
 const server = serve({ fetch: app.fetch, port: PORT }, (info) => {
-  console.log(`vengine server on http://localhost:${info.port}`);
+  console.log(`✓ vengine server ready on http://localhost:${info.port}`);
 });
 injectWebSocket(server);
