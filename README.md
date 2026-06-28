@@ -7,6 +7,8 @@ Think **ComfyUI, but API-only and cost-aware** — a personal, local-first tool 
 creator. No GPUs to run, no servers to manage. You wire up models and post-processing on a
 visual canvas, and the engine only ever re-runs (and re-bills) the parts that actually changed.
 
+![vengine node graph canvas and Comic Studio](docs/assets/screenshot.png)
+
 ## What it does
 
 - **Node graph canvas** — connect generation, compositing, and I/O nodes visually (React Flow).
