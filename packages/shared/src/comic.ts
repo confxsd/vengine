@@ -84,6 +84,17 @@ export const ComicFrameSchema = z.object({
    * unknown ids are ignored, so reordering or removing frames never breaks a run.
    */
   continuesFrameId: z.string().optional(),
+  /**
+   * How the continued frame's image is used by an edit-capable model (see
+   * `continuityDirective`). Two intents that an edit endpoint treats very differently:
+   *   "restage" → keep the prior scene's setting/light/palette/character design, but
+   *               re-compose with a NEW camera angle and blocking as the prompt asks.
+   *   "shot"    → preserve the prior shot's exact composition/camera; edit in place.
+   * Undefined defaults to "restage" (`DEFAULT_CONTINUES_MODE`): feeding a prior image
+   * to an edit endpoint otherwise pins it pixel-for-pixel, which silently defeats any
+   * "different angle" request. Inert unless `continuesFrameId` resolves to an image.
+   */
+  continuesMode: z.enum(["shot", "restage"]).optional(),
   /** The currently selected/displayed image (a hash from `variants`). The artist
    *  picks it; a run sets it to the freshest generation. */
   resultHash: z.string().length(64).optional(),
@@ -115,6 +126,28 @@ export const DEFAULT_REFERENCE_WEIGHT = 1;
 /** Influence weight of a scene-continuity reference. Full strength by design: a
  *  continuation must lock the prior scene hard, so it leads at maximum weight. */
 export const DEFAULT_CONTINUITY_WEIGHT = 1;
+
+/** How a continuation frame uses the prior frame's image. See `ComicFrameSchema.continuesMode`. */
+export type ContinuesMode = "shot" | "restage";
+
+/** Default continuation intent when a frame sets none. "restage" (not "shot")
+ *  because an edit endpoint pins a bare reference image pixel-for-pixel, so the
+ *  safe default must explicitly free the camera — otherwise "new angle" requests
+ *  silently produce a copy of the source frame. */
+export const DEFAULT_CONTINUES_MODE: ContinuesMode = "restage";
+
+/**
+ * The continuity instruction injected into a continuation frame's prompt, telling an
+ * edit-capable model HOW to treat the prior frame's image (fed as the leading
+ * reference). Without this an edit endpoint defaults to "preserve the canvas and
+ * inpaint", which copies the source composition and defeats a re-stage/new-angle
+ * prompt. Returned as a trailing directive so the frame's own description still leads.
+ */
+export function continuityDirective(mode: ContinuesMode): string {
+  return mode === "shot"
+    ? "Continuity: the reference image is THIS exact shot — preserve its composition, camera angle and framing, and change only what the description above specifies."
+    : "Continuity: the reference image is the previous panel of this same scene — keep its setting, lighting, color palette, character designs and wardrobe consistent, but RE-STAGE it as a new composition with its own camera angle and blocking exactly as described above. Do not copy the previous panel's framing, camera or poses.";
+}
 
 /** A frame's current still image: the selected result, else its newest variant. */
 export function frameImageHash(frame: ComicFrame): string | undefined {
@@ -240,7 +273,15 @@ export function composeFramePrompt(project: ComicProject, frame: ComicFrame): st
     .split("\n")
     .map((l) => l.replace(/\s+$/, ""))
     .filter((l) => !/^\s*\p{L}[\p{L} ]*:\s*$/u.test(l));
-  return kept.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+  const base = kept.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+
+  // Append the continuity directive only when a prior frame's image is actually fed
+  // in as a reference (same gate as the compiler), so the edit model is told how to
+  // use it. Gating on `continuityReferences` keeps preview, compile and run identical
+  // and emits nothing for a dangling/self/imageless link.
+  if (continuityReferences(project, frame).length === 0) return base;
+  const directive = continuityDirective(frame.continuesMode ?? DEFAULT_CONTINUES_MODE);
+  return base ? `${base}\n\n${directive}` : directive;
 }
 
 /**
@@ -270,6 +311,137 @@ export function continuityReferences(
   const source = project.frames.find((f) => f.id === continuesFrameId);
   const hash = source && frameImageHash(source);
   return hash ? [{ hash, weight: DEFAULT_CONTINUITY_WEIGHT }] : [];
+}
+
+/**
+ * How an in-place image edit treats the base image (fed to an edit-capable model as
+ * its leading, full-weight reference). Two intents an edit endpoint treats very
+ * differently — the same axis as `ContinuesMode`, but for editing a frame's *own*
+ * picture rather than continuing another frame's scene:
+ *   "tweak"   → keep the existing artwork almost intact (same composition, camera,
+ *               lighting, identity, style) and change ONLY what the instruction asks.
+ *   "restage" → keep the look (characters, wardrobe, setting, palette, style) but
+ *               allow a new camera angle / pose / blocking to satisfy the instruction.
+ */
+export type EditMode = "tweak" | "restage";
+
+/** Default edit intent: the conservative "tweak" (change only what's asked). */
+export const DEFAULT_EDIT_MODE: EditMode = "tweak";
+
+/**
+ * The constraint clause appended after the user's edit instruction, telling an
+ * edit-capable model HOW to use the base image (fed as the leading reference). An
+ * edit endpoint otherwise defaults to "preserve the canvas and inpaint", which both
+ * over-pins a "restage" request and under-specifies a "tweak" one — so the intent
+ * must be stated explicitly, exactly as `continuityDirective` does for continuations.
+ */
+export function editDirective(mode: EditMode): string {
+  return mode === "tweak"
+    ? "Edit instruction: the reference image is the current artwork — change ONLY what is described above. Preserve everything else exactly: composition, camera angle, framing, lighting, color palette, character identity, wardrobe and art style. Do not redraw or restyle anything that the instruction does not mention."
+    : "Edit instruction: apply the change described above, using the reference image as the canonical look — keep the same characters, wardrobe, setting, lighting, color palette, mood and art style. You may re-stage the composition with a new camera angle, posing and blocking as needed to achieve it, but never change character identity or visual style.";
+}
+
+/**
+ * Compose the prompt for an in-place edit: the artist's change instruction leads,
+ * then the mode constraint that tells the edit model how to treat the base image.
+ * Mirrors `composeFramePrompt` (instruction-first, directive-trailing) so the edit
+ * reads the same way a continuation does. An empty instruction yields just the
+ * directive (a bare "tweak"/"restage" of the source).
+ */
+export function composeEditPrompt(instruction: string, mode: EditMode): string {
+  const base = instruction.trim();
+  const directive = editDirective(mode);
+  return base ? `${base}\n\n${directive}` : directive;
+}
+
+/**
+ * The ordered, weighted reference set for an in-place edit of `frame`: the chosen
+ * base image first at full weight (it dominates — the edit endpoint builds on it),
+ * then, when `keepStyle`, the project's style references and the identity refs of the
+ * frame's active cast (so the look and characters stay consistent through the edit).
+ * Deduped by hash, base first, so the base keeps its leading position even if it's
+ * also a style/character ref. Unlike `frameReferences` there is no continuity ref —
+ * an edit operates on its own explicit base, not a continued scene.
+ */
+export function editReferences(
+  project: ComicProject,
+  frame: ComicFrame,
+  baseHash: string,
+  keepStyle: boolean,
+): ComicReference[] {
+  const base: ComicReference = { hash: baseHash, weight: DEFAULT_REFERENCE_WEIGHT };
+  if (!keepStyle) return [base];
+  const ids = frame.characterIds;
+  const activeCast =
+    ids === undefined ? project.cast : project.cast.filter((c) => ids.includes(c.id));
+  const characterRefs = activeCast.flatMap((c) =>
+    c.refHashes.map((hash) => ({ hash, weight: DEFAULT_REFERENCE_WEIGHT })),
+  );
+  const byHash = new Map<string, ComicReference>();
+  for (const ref of [base, ...styleReferences(project.style), ...characterRefs]) {
+    if (!byHash.has(ref.hash)) byHash.set(ref.hash, ref);
+  }
+  return [...byHash.values()];
+}
+
+/** A request to edit one frame's image in place. See `compileEditFrame`. */
+export interface EditFrameRequest {
+  /** The image to edit (a hash in the asset store — a frame variant or an upload). */
+  baseHash: string;
+  /** What to change ("she leans back; lower camera angle"). */
+  instruction: string;
+  /** How freely to deviate from the base (defaults to `DEFAULT_EDIT_MODE`). */
+  mode?: EditMode;
+  /** Per-edit seed (defaults to the frame's, then the project's locked seed). */
+  seed?: number;
+  /** Carry the project's style refs + active cast as secondary references (default true). */
+  keepStyle?: boolean;
+}
+
+/**
+ * Lower a single in-place edit to a runnable one-node GraphDocument: a lone
+ * generation node (no export — its bytes land in the asset store and the hash is read
+ * back from the run result). The node id is the frame's own `genNodeId`, so live
+ * progress + preview events route to the frame exactly as a normal run does, and the
+ * base image leads the reference set so an edit-capable model edits it in place.
+ */
+export function compileEditFrame(
+  project: ComicProject,
+  frame: ComicFrame,
+  req: EditFrameRequest,
+): GraphDocument {
+  const { style } = project;
+  const mode = req.mode ?? DEFAULT_EDIT_MODE;
+  const keepStyle = req.keepStyle ?? true;
+  const references = editReferences(project, frame, req.baseHash, keepStyle);
+  const loras = style.loras
+    .filter((l) => l.path.trim())
+    .map((l) => ({ path: l.path, scale: l.scale }));
+
+  return GraphDocumentSchema.parse({
+    version: 1,
+    id: `comic-${project.id}-edit-${frame.id}`,
+    name: `${project.name} · edit`,
+    nodes: [
+      {
+        id: genNodeId(frame.id),
+        type: "generate.text-to-image",
+        position: { x: 0, y: 0 },
+        params: {
+          model: style.model,
+          prompt: composeEditPrompt(req.instruction, mode),
+          negativePrompt: style.negative,
+          width: style.width,
+          height: style.height,
+          seed: req.seed ?? frame.seed ?? style.seed,
+          references,
+          ...(loras.length ? { loras } : {}),
+        },
+        title: `Edit ${frame.id}`,
+      },
+    ],
+    edges: [],
+  });
 }
 
 /**

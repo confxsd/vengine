@@ -7,6 +7,7 @@ import type {
   GraphDocument,
 } from "@vengine/shared";
 import type {
+  ComicEditResult,
   ComicRunResult,
   FrameOutputDelta,
   ModelInfo,
@@ -66,6 +67,18 @@ export const api = {
     post<RunPlan>(`/api/comics/${id}/plan`, { quality, frameIds }),
   runComic: (id: string, quality?: "preview" | "final", frameIds?: string[]) =>
     post<ComicRunResult>(`/api/comics/${id}/run`, { quality, frameIds }),
+  editFrame: (
+    id: string,
+    frameId: string,
+    body: {
+      baseHash: string;
+      instruction: string;
+      mode?: "tweak" | "restage";
+      keepStyle?: boolean;
+      seed?: number;
+      quality?: "preview" | "final";
+    },
+  ) => post<ComicEditResult>(`/api/comics/${id}/frames/${frameId}/edit`, body),
   deleteVariant: (id: string, frameId: string, hash: string) =>
     fetch(`/api/comics/${id}/frames/${frameId}/variants/${hash}`, { method: "DELETE" }).then(
       json<FrameOutputDelta>,

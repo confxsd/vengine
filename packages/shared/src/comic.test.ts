@@ -2,13 +2,18 @@ import { describe, it, expect } from "vitest";
 import {
   ComicProjectSchema,
   compileComic,
+  compileEditFrame,
   composeFramePrompt,
+  composeEditPrompt,
+  editReferences,
+  editDirective,
   genNodeId,
   exportNodeId,
   frameIdFromNodeId,
   unionVariants,
   frameReferenceHashes,
   frameReferences,
+  continuityDirective,
   styleReferences,
   MAX_VARIANTS,
   DEFAULT_NEGATIVE,
@@ -64,6 +69,46 @@ describe("composeFramePrompt", () => {
     expect(out).toContain("Style: noir ink");
     expect(out).not.toMatch(/Setting:/);
     expect(out).not.toMatch(/\n{3,}/);
+  });
+
+  it("appends the re-stage continuity directive by default for a continued frame", () => {
+    const sourceImg = "d".repeat(64);
+    const p = project({
+      frames: [
+        { id: "a", prompt: "a wide shot of the plaza", resultHash: sourceImg },
+        { id: "b", prompt: "the crowd scatters", continuesFrameId: "a" }, // no mode → restage
+      ],
+    });
+    const out = composeFramePrompt(p, p.frames[1]!);
+    expect(out).toContain("the crowd scatters"); // the frame's own description still leads
+    expect(out).toContain(continuityDirective("restage"));
+    expect(out).toMatch(/RE-STAGE/);
+  });
+
+  it("uses the same-shot directive when the frame's mode is 'shot'", () => {
+    const sourceImg = "d".repeat(64);
+    const p = project({
+      frames: [
+        { id: "a", prompt: "a wide shot of the plaza", resultHash: sourceImg },
+        { id: "b", prompt: "now in close-up", continuesFrameId: "a", continuesMode: "shot" },
+      ],
+    });
+    const out = composeFramePrompt(p, p.frames[1]!);
+    expect(out).toContain(continuityDirective("shot"));
+    expect(out).not.toMatch(/RE-STAGE/);
+  });
+
+  it("emits no continuity directive when the link resolves to no image", () => {
+    const dangling = project({
+      frames: [
+        { id: "a", prompt: "not generated yet" }, // no image to continue from
+        { id: "b", prompt: "y", continuesFrameId: "a" },
+      ],
+    });
+    expect(composeFramePrompt(dangling, dangling.frames[1]!)).not.toMatch(/Continuity:/);
+    // A frame with no continuation link is likewise untouched.
+    const plain = project();
+    expect(composeFramePrompt(plain, plain.frames[0]!)).not.toMatch(/Continuity:/);
   });
 });
 
@@ -314,5 +359,67 @@ describe("compileComic", () => {
     // 768×1344 is the SDXL/fal-friendly ~1MP portrait bucket nearest exact 9:16.
     expect(DEFAULT_WIDTH / DEFAULT_HEIGHT).toBeCloseTo(9 / 16, 1);
     expect(DEFAULT_HEIGHT).toBeGreaterThan(DEFAULT_WIDTH);
+  });
+});
+
+describe("in-place edit", () => {
+  const base = "d".repeat(64);
+
+  it("composeEditPrompt leads with the instruction, then the mode directive", () => {
+    const out = composeEditPrompt("she leans back, lower camera angle", "tweak");
+    expect(out.startsWith("she leans back, lower camera angle")).toBe(true);
+    expect(out).toContain(editDirective("tweak"));
+    // tweak preserves the frame; restage frees the camera — the two must differ.
+    expect(editDirective("tweak")).not.toBe(editDirective("restage"));
+    expect(editDirective("restage").toLowerCase()).toContain("re-stage");
+  });
+
+  it("composeEditPrompt falls back to just the directive for an empty instruction", () => {
+    expect(composeEditPrompt("   ", "restage")).toBe(editDirective("restage"));
+  });
+
+  it("leads the reference set with the base, then style + active cast (deduped)", () => {
+    const anchor = "a".repeat(64);
+    const hero = "b".repeat(64);
+    const p = project({
+      style: { ...project().style, anchors: [{ hash: anchor, weight: 0.7 }] },
+      cast: [{ id: "hero", name: "Hero", refHashes: [hero] }],
+    });
+    const refs = editReferences(p, p.frames[0]!, base, true);
+    expect(refs).toEqual([
+      { hash: base, weight: 1 },
+      { hash: anchor, weight: 0.7 },
+      { hash: hero, weight: 1 },
+    ]);
+    // keepStyle=false reduces to the lone base image.
+    expect(editReferences(p, p.frames[0]!, base, false)).toEqual([{ hash: base, weight: 1 }]);
+  });
+
+  it("keeps the base leading even when it is also a style ref", () => {
+    const p = project({ style: { ...project().style, anchors: [{ hash: base, weight: 0.5 }] } });
+    expect(editReferences(p, p.frames[0]!, base, true)).toEqual([{ hash: base, weight: 1 }]);
+  });
+
+  it("compiles a single gen node keyed by the frame id, with the base + instruction baked in", () => {
+    const p = project();
+    const g = compileEditFrame(p, p.frames[0]!, { baseHash: base, instruction: "warmer light" });
+    expect(g.nodes).toHaveLength(1);
+    expect(g.edges).toHaveLength(0);
+    const gen = g.nodes[0]!;
+    // Frame-id node id → live preview/progress routes to the frame like a normal run.
+    expect(gen.id).toBe(genNodeId("a"));
+    expect(frameIdFromNodeId(gen.id)).toBe("a");
+    expect(gen.params.prompt).toContain("warmer light");
+    expect(gen.params.references).toEqual([{ hash: base, weight: 1 }]);
+    expect(gen.params.negativePrompt).toBe(DEFAULT_NEGATIVE);
+  });
+
+  it("applies edit seed precedence: request → frame → style seed", () => {
+    const p = project(); // frame "a" has no seed (style seed 7); frame "b" seed 99
+    expect(compileEditFrame(p, p.frames[0]!, { baseHash: base, instruction: "x" }).nodes[0]!.params.seed).toBe(7);
+    expect(compileEditFrame(p, p.frames[1]!, { baseHash: base, instruction: "x" }).nodes[0]!.params.seed).toBe(99);
+    expect(
+      compileEditFrame(p, p.frames[0]!, { baseHash: base, instruction: "x", seed: 123 }).nodes[0]!.params.seed,
+    ).toBe(123);
   });
 });

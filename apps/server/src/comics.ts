@@ -4,6 +4,7 @@ import { z } from "zod";
 import {
   ComicProjectSchema,
   compileComic,
+  compileEditFrame,
   genNodeId,
   exportNodeId,
   frameIdFromNodeId,
@@ -34,6 +35,21 @@ const RunBody = z.object({
   quality: z.enum(["preview", "final"]).optional(),
   /** Subset of frames to (re)generate; omitted = all frames. */
   frameIds: z.array(z.string()).optional(),
+});
+
+/** In-place edit of one frame's image (instruction-driven image-to-image). */
+const EditBody = z.object({
+  /** The image to edit — a hash already in the asset store (a variant or an upload). */
+  baseHash: z.string().length(64),
+  /** What to change. */
+  instruction: z.string().default(""),
+  /** How freely to deviate from the base image. */
+  mode: z.enum(["tweak", "restage"]).optional(),
+  /** Carry the project's style refs + active cast as secondary references. */
+  keepStyle: z.boolean().optional(),
+  /** Per-edit seed (a fresh roll explores; a fixed value reproduces). */
+  seed: z.number().int().optional(),
+  quality: z.enum(["preview", "final"]).optional(),
 });
 
 /** Mount the Comic Studio routes onto the main Hono app. */
@@ -211,6 +227,94 @@ export function registerComicRoutes(app: Hono, rt: Runtime, broadcast: Broadcast
       status: result.status,
       error: result.error,
       frames: saved.frames.map((f) => ({ id: f.id, resultHash: f.resultHash, variants: f.variants })),
+    });
+  });
+
+  // Edit one frame's image in place: compile a single-node edit graph (the base
+  // image leads the reference set, the instruction drives an edit-capable model),
+  // run it, and persist the result as a new — selected — variant of that frame.
+  // Shares the run plumbing (runId/cancel, "*" brackets, WS preview routing) so the
+  // edit streams a live preview to the frame exactly like a normal generation.
+  app.post("/api/comics/:id/frames/:frameId/edit", async (c) => {
+    const id = c.req.param("id");
+    const frameId = c.req.param("frameId");
+    const parsed = EditBody.safeParse(await c.req.json().catch(() => ({})));
+    if (!parsed.success) return c.json({ error: parsed.error.message }, 400);
+
+    let project: ComicProject;
+    try {
+      project = await rt.projects.get(id);
+    } catch {
+      return c.json({ error: "not found" }, 404);
+    }
+    const frame = project.frames.find((f) => f.id === frameId);
+    if (!frame) return c.json({ error: "frame not found" }, 404);
+
+    const req = parsed.data;
+    const graph = compileEditFrame(project, frame, req);
+    const gid = genNodeId(frameId);
+    // Record the seed actually compiled, so a re-selected edit variant reproduces.
+    const seed = req.seed ?? frame.seed ?? project.style.seed;
+
+    const runId = randomUUID();
+    const ac = new AbortController();
+    runs.set(runId, ac);
+    broadcast({ runId, nodeId: "*", status: "running", at: new Date().toISOString() });
+
+    // Capture the streamed hash so a finished-then-stopped edit still persists.
+    let produced: string | undefined;
+    const onEmit = (e: NodeProgressEvent) => {
+      if (e.nodeId === gid && e.previewHash) produced = e.previewHash;
+      broadcast(e);
+    };
+
+    let result;
+    try {
+      result = await rt.executor.run(graph, {
+        runId,
+        services: rt.services,
+        quality: req.quality,
+        targets: [gid],
+        emit: onEmit,
+        signal: ac.signal,
+      });
+    } finally {
+      runs.delete(runId);
+    }
+
+    const hash =
+      (result.nodes.get(gid)?.outputs?.image as { hash?: string } | undefined)?.hash ?? produced;
+
+    let saved = project;
+    if (hash) {
+      try {
+        saved = await rt.projects.update(id, (latest) => ({
+          ...latest,
+          frames: latest.frames.map((f) =>
+            f.id === frameId
+              ? { ...f, resultHash: hash, variants: unionVariants(f.variants, [{ hash, seed }]) }
+              : f,
+          ),
+        }));
+      } catch {
+        /* project vanished mid-edit — nothing to persist */
+      }
+    }
+
+    broadcast({
+      runId,
+      nodeId: "*",
+      status: result.status === "done" ? "done" : "error",
+      error: result.error,
+      at: new Date().toISOString(),
+    });
+
+    const out = saved.frames.find((f) => f.id === frameId);
+    return c.json({
+      runId: result.runId,
+      status: result.status,
+      error: result.error,
+      frame: out ? { id: out.id, resultHash: out.resultHash, variants: out.variants } : null,
     });
   });
 

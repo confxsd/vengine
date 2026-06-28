@@ -49,6 +49,14 @@ export interface ComicRunResult {
   frames: FrameOutputDelta[];
 }
 
+/** Response of POST /api/comics/:id/frames/:frameId/edit (one frame's new output). */
+export interface ComicEditResult {
+  runId: string;
+  status: "pending" | "running" | "done" | "error" | "cancelled";
+  error?: string;
+  frame: FrameOutputDelta | null;
+}
+
 export interface PortInfo {
   id: string;
   type: string;

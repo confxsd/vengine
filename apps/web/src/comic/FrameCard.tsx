@@ -10,6 +10,8 @@ import {
   Play,
   Star,
   Trash2,
+  Upload,
+  Wand2,
   X,
 } from "lucide-react";
 import {
@@ -24,6 +26,7 @@ import { api } from "../api";
 import type { NodeRunStatus } from "../types";
 import { Card, IconButton, Input, Select } from "../components/ui";
 import { AssistTextarea } from "./AssistTextarea";
+import { EditFrameModal } from "./EditFrameModal";
 import { cn } from "@/lib/cn";
 
 const STATUS_DOT: Record<NodeRunStatus, string> = {
@@ -51,8 +54,8 @@ export function FrameCard({ frame, index, total }: Props) {
     varyFrame,
     selectVariant,
     removeVariant,
+    uploadFrameOutput,
     displayHash,
-    running,
     liveStatus,
     finalPrompt,
     addStyleRefFromFrame,
@@ -61,12 +64,16 @@ export function FrameCard({ frame, index, total }: Props) {
     setFrameContinuation,
     selectedFrameIds,
     toggleFrameSelected,
+    inFlight,
   } = useComic();
   const selected = selectedFrameIds.includes(frame.id);
+  /** This frame is mid-generation — disable its own controls, but not others'. */
+  const busy = inFlight.includes(frame.id);
   const openLightbox = useStudio((s) => s.openLightbox);
   const project = useComic((s) => s.project);
   const cast = project?.cast ?? [];
   const [showFinal, setShowFinal] = useState(false);
+  const [editing, setEditing] = useState(false);
   /** A frame with no explicit list shows the whole cast (undefined = all). */
   const inFrame = (charId: string) =>
     frame.characterIds === undefined || frame.characterIds.includes(charId);
@@ -113,6 +120,33 @@ export function FrameCard({ frame, index, total }: Props) {
     ? project?.frames.find((f) => f.id === frame.continuesFrameId)
     : undefined;
   const continuesThumb = continuesSource ? frameImageHash(continuesSource) : undefined;
+
+  const onUploadOutput = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) void uploadFrameOutput(frame.id, file);
+    e.target.value = ""; // allow re-selecting the same file
+  };
+
+  // Drag an image file onto the preview to set it as this frame's output.
+  const [dragOver, setDragOver] = useState(false);
+  const isFileDrag = (e: React.DragEvent) => e.dataTransfer.types.includes("Files");
+  const onDragOver = (e: React.DragEvent) => {
+    if (busy || !isFileDrag(e)) return;
+    e.preventDefault(); // mark this a valid drop target
+    setDragOver(true);
+  };
+  const onDragLeave = (e: React.DragEvent) => {
+    // Ignore leaves into child elements; only clear when leaving the area entirely.
+    if (e.currentTarget.contains(e.relatedTarget as Node | null)) return;
+    setDragOver(false);
+  };
+  const onDropFile = (e: React.DragEvent) => {
+    e.preventDefault();
+    setDragOver(false);
+    if (busy) return;
+    const file = Array.from(e.dataTransfer.files).find((f) => f.type.startsWith("image/"));
+    if (file) void uploadFrameOutput(frame.id, file);
+  };
 
   return (
     <Card
@@ -175,7 +209,13 @@ export function FrameCard({ frame, index, total }: Props) {
         </div>
       </div>
 
-      {/* 9:16 preview */}
+      {/* 9:16 preview — drop an image anywhere on it to set it as the output. */}
+      <div
+        className="relative"
+        onDragOver={onDragOver}
+        onDragLeave={onDragLeave}
+        onDrop={onDropFile}
+      >
       {previewHash ? (
         <div className="group/preview relative">
           <button
@@ -203,24 +243,51 @@ export function FrameCard({ frame, index, total }: Props) {
           <button
             type="button"
             onClick={() => void removeVariant(frame.id, previewHash)}
-            disabled={running}
+            disabled={busy}
             aria-label="Delete this image"
             title="Delete this image"
             className="absolute right-1.5 top-1.5 rounded-full bg-black/55 p-1 text-white/85 opacity-0 transition hover:bg-down hover:text-white focus-visible:opacity-100 group-hover/preview:opacity-100 disabled:cursor-not-allowed disabled:opacity-0"
           >
             <Trash2 className="h-3.5 w-3.5" />
           </button>
+          {/* Image-to-image edit: iterate on THIS image (posture, camera, small fixes). */}
+          <button
+            type="button"
+            onClick={() => setEditing(true)}
+            disabled={busy}
+            aria-label="Edit this image"
+            title="Edit this image — tweak posture, camera angle, small fixes"
+            className="absolute bottom-1.5 left-1/2 flex -translate-x-1/2 items-center gap-1 rounded-full bg-accent/90 px-2.5 py-1 text-[10px] font-semibold text-accent-contrast opacity-0 shadow-lg shadow-black/30 transition hover:bg-accent focus-visible:opacity-100 group-hover/preview:opacity-100 disabled:cursor-not-allowed disabled:opacity-0"
+          >
+            <Wand2 className="h-3 w-3" />
+            Edit
+          </button>
+        </div>
+      ) : status === "queued" || status === "running" ? (
+        <div className="flex aspect-[9/16] w-full items-center justify-center rounded-md border border-dashed border-border text-[10px] text-faint">
+          generating…
         </div>
       ) : (
-        <div className="flex aspect-[9/16] w-full items-center justify-center rounded-md border border-dashed border-border text-[10px] text-faint">
-          {status === "queued" || status === "running"
-            ? "generating…"
-            : "no image yet"}
-        </div>
+        // No output (e.g. lost/never generated): let the artist upload one directly,
+        // so other frames can be continued from this scene.
+        <label className="flex aspect-[9/16] w-full cursor-pointer flex-col items-center justify-center gap-1 rounded-md border border-dashed border-border text-[10px] text-faint transition-colors hover:border-border-strong hover:text-muted">
+          <input type="file" accept="image/*" className="hidden" disabled={busy} onChange={onUploadOutput} />
+          <Upload className="h-4 w-4" />
+          <span>upload output</span>
+        </label>
       )}
+        {dragOver && (
+          <div className="pointer-events-none absolute inset-0 z-10 flex flex-col items-center justify-center gap-1 rounded-md bg-accent/20 text-[11px] font-medium text-accent ring-2 ring-inset ring-accent backdrop-blur-sm">
+            <Upload className="h-5 w-5" />
+            drop image
+          </div>
+        )}
+      </div>
 
-      {/* Variant history — pick a past iteration to restore its image + seed. */}
-      {frame.variants.length > 1 && (
+      {/* Variant history — pick a past iteration to restore its image + seed.
+          The trailing tile uploads an image as an extra output (e.g. to restore a
+          lost one, or seed a scene other frames continue from). */}
+      {frame.variants.length > 0 && (
         <div className="flex gap-1 overflow-x-auto pb-0.5">
           {frame.variants.map((v) => {
             const selected = v.hash === previewHash;
@@ -244,7 +311,7 @@ export function FrameCard({ frame, index, total }: Props) {
                 <button
                   type="button"
                   onClick={() => void removeVariant(frame.id, v.hash)}
-                  disabled={running}
+                  disabled={busy}
                   aria-label={`Delete variant seed ${v.seed}`}
                   title="Delete this image"
                   className="absolute right-0 top-0 rounded-bl rounded-tr bg-black/65 p-0.5 text-white/85 opacity-0 transition hover:bg-down hover:text-white group-hover/var:opacity-100 disabled:cursor-not-allowed disabled:opacity-0"
@@ -254,6 +321,13 @@ export function FrameCard({ frame, index, total }: Props) {
               </div>
             );
           })}
+          <label
+            title="Upload an image as an output for this frame"
+            className="flex h-12 w-9 shrink-0 cursor-pointer flex-col items-center justify-center rounded ring-1 ring-dashed ring-border text-faint transition hover:text-accent hover:ring-accent/60"
+          >
+            <input type="file" accept="image/*" className="hidden" disabled={busy} onChange={onUploadOutput} />
+            <Upload className="h-3.5 w-3.5" />
+          </label>
         </div>
       )}
 
@@ -300,32 +374,49 @@ export function FrameCard({ frame, index, total }: Props) {
 
       {/* Scene continuity — mark THIS frame as continued from another frame; that
           source frame's image is fed in as the strongest reference when this frame
-          generates (same setting/light, new action). */}
+          generates. The mode tells the edit model how to use it: re-stage a new
+          camera angle in the same scene, or edit that exact shot in place. */}
       {total > 1 && (
-        <div className="flex items-center gap-1.5">
-          <Link2 className="h-3.5 w-3.5 shrink-0 text-faint" />
-          <Select
-            className="flex-1"
-            value={frame.continuesFrameId ?? ""}
-            onChange={(e) => setFrameContinuation(frame.id, e.target.value || null)}
-            title="Make this frame a continuation of another frame's scene — that frame's image is fed in as the strongest reference when generating this one"
-          >
-            <option value="">not a continuation</option>
-            {(project?.frames ?? []).map((f, i) =>
-              f.id === frame.id ? null : (
-                <option key={f.id} value={f.id}>
-                  continued from Frame {i + 1}
-                </option>
-              ),
+        <div className="flex flex-col gap-1.5">
+          <div className="flex items-center gap-1.5">
+            <Link2 className="h-3.5 w-3.5 shrink-0 text-faint" />
+            <Select
+              className="flex-1"
+              value={frame.continuesFrameId ?? ""}
+              onChange={(e) => setFrameContinuation(frame.id, e.target.value || null)}
+              title="Make this frame a continuation of another frame's scene — that frame's image is fed in as the strongest reference when generating this one"
+            >
+              <option value="">not a continuation</option>
+              {(project?.frames ?? []).map((f, i) =>
+                f.id === frame.id ? null : (
+                  <option key={f.id} value={f.id}>
+                    continued from Frame {i + 1}
+                  </option>
+                ),
+              )}
+            </Select>
+            {continuesThumb && (
+              <img
+                src={api.thumbUrl(continuesThumb)}
+                alt="scene this frame is continued from"
+                className="h-8 w-[18px] shrink-0 rounded object-cover ring-1 ring-accent/40"
+                title="The scene this frame is continued from"
+              />
             )}
-          </Select>
-          {continuesThumb && (
-            <img
-              src={api.thumbUrl(continuesThumb)}
-              alt="scene this frame is continued from"
-              className="h-8 w-[18px] shrink-0 rounded object-cover ring-1 ring-accent/40"
-              title="The scene this frame is continued from"
-            />
+          </div>
+          {/* Continuation intent — only meaningful once a source frame is linked. */}
+          {frame.continuesFrameId && (
+            <Select
+              className="ml-5"
+              value={frame.continuesMode ?? "restage"}
+              onChange={(e) =>
+                patchFrame(frame.id, { continuesMode: e.target.value as "shot" | "restage" })
+              }
+              title="How to use the linked frame: re-stage a new camera angle in the same scene (keeps setting, light, palette & characters), or edit that exact shot in place"
+            >
+              <option value="restage">↪ new angle (re-stage)</option>
+              <option value="shot">↪ same shot (edit in place)</option>
+            </Select>
           )}
         </div>
       )}
@@ -347,7 +438,7 @@ export function FrameCard({ frame, index, total }: Props) {
           variant="secondary"
           label="Vary — regenerate with a fresh random seed"
           onClick={() => varyFrame(frame.id)}
-          disabled={running}
+          disabled={busy}
         >
           <Dices className="h-3.5 w-3.5" />
         </IconButton>
@@ -355,7 +446,7 @@ export function FrameCard({ frame, index, total }: Props) {
           variant="accent"
           label="Generate just this frame"
           onClick={() => runOne(frame.id)}
-          disabled={running}
+          disabled={busy}
         >
           <Play className="h-3.5 w-3.5 fill-current" />
         </IconButton>
@@ -406,6 +497,10 @@ export function FrameCard({ frame, index, total }: Props) {
             </button>
           ))}
         </div>
+      )}
+
+      {editing && (
+        <EditFrameModal frameId={frame.id} index={index} onClose={() => setEditing(false)} />
       )}
     </Card>
   );

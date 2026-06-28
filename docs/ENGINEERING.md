@@ -425,8 +425,15 @@ References are **two-tier**: a project-wide set of **weighted style references**
 character without re-uploading; removing a library entry detaches every usage so nothing dangles. A third,
 **per-frame** lever is **scene continuity** (`frame.continuesFrameId`): one frame *continues* another
 frame's scene, so the source frame's current image (`frameImageHash` = `resultHash ?? newest variant`) is
-fed in as the **strongest, leading** reference at full weight — same setting/lighting/framing continuity,
-while this frame's prompt, composition, camera and cast move the action on. Self-links, unknown ids and
+fed in as the **strongest, leading** reference at full weight. Because that reference routes the run to an
+**edit endpoint** (see below), a bare image otherwise pins the source pixel-for-pixel and silently defeats
+any "new camera angle" prompt. So continuity also carries an **intent** (`frame.continuesMode`,
+`ContinuesMode`) that `composeFramePrompt` lowers into a trailing **continuity directive**
+(`continuityDirective`) telling the edit model how to use the reference: `"restage"` (default,
+`DEFAULT_CONTINUES_MODE`) = keep setting/light/palette/character design but re-compose with a new camera and
+blocking; `"shot"` = preserve the exact composition/camera and edit in place. The directive is appended only
+when a continuity reference actually resolves (same gate as the compiler), so preview, compile and run stay
+identical and a dangling/self/imageless link emits nothing. Self-links, unknown ids and
 not-yet-generated sources resolve to nothing, so reordering/deleting frames never breaks a run (the store
 also clears links pointing at a removed frame). Per
 frame, `frameReferences` (`packages/shared/src/comic.ts`) resolves the ordered, deduped, **weighted** set
@@ -485,6 +492,24 @@ editor (URL/hub-id + scale per row). LoRA = the strongest *fixed-style* lock; re
 regenerates one frame; the per-frame **variant strip** lets the artist pick a past iteration, which
 restores both its image and seed (reproducible). `runOne`/`targets` bills only that frame's sub-DAG.
 
+**In-place image edit (refine workflow).** Distinct from continuity (which references *another* frame),
+the **✎ Edit** action iterates on a frame's *own* image: pick a base (any variant, or an upload), describe
+the change, and an edit-capable model applies it. `compileEditFrame` (`packages/shared/src/comic.ts`)
+lowers it to a **single `generate.text-to-image` node** keyed by the frame's own `gen-<id>` (so live
+preview/progress route to the frame like a normal run, no `io.export` — the hash is read back from the run
+result). `editReferences` leads the set with the **chosen base at full weight** (so the edit endpoint
+builds on it), then — when *Keep style & characters* is on — the project's style refs + the frame's active
+cast, deduped (base wins). The instruction drives the prompt via `composeEditPrompt`, which leads with the
+artist's text and trails an **edit directive** (`editDirective`, `EditMode`): `"tweak"` (default) preserves
+composition/camera/lighting/identity and changes only what's asked; `"restage"` keeps the look but frees the
+camera/pose — the same shot-vs-restage axis as continuity, applied to a self-edit. Each edit appends a new
+selected variant (so edits chain — the editor re-homes its base onto the fresh result); seed defaults to a
+fresh roll per edit (explore) unless locked (reproduce). Server route **`POST
+/api/comics/:id/frames/:frameId/edit`** (`EditBody`) shares the `/run` plumbing (runId/cancel, `"*"`
+brackets, WS preview routing) and persists via the same `update()` + `unionVariants` write-back. Gated on
+`consumesReferences`: on a model that ignores references the editor disables Generate with a
+capability-aware warning (a plain t2i pass would ignore the base).
+
 **Cost efficiency.** A persistent `FileOutputCache` (`packages/storage/src/output-cache.ts`, wired in
 `runtime.ts`) stores node outputs as sharded JSON under `~/.vengine/cache`, so an unchanged frame stays
 free **across server restarts** — the key lever for iterative paid generation (the old in-memory cache
@@ -498,7 +523,8 @@ union-merges `variants` and never clobbers `resultHash` with undefined; the run 
 
 **Server** (`apps/server/src/comics.ts`): comics CRUD, snapshots, `/plan`, `/run` (compile →
 `executor.run` with `targets`; captures freshly streamed hashes so a cancelled/failed run still
-persists finished frames), **`POST /api/runs/:runId/cancel`** (AbortController registry — stops paid
+persists finished frames), **`POST /api/comics/:id/frames/:frameId/edit`** (in-place image edit; see
+*In-place image edit* above), **`POST /api/runs/:runId/cancel`** (AbortController registry — stops paid
 spend mid-run; client learns the runId from the WS start event), and `POST /api/assets` (multipart,
 image-only, 25 MB cap) for anchor upload.
 
@@ -506,8 +532,17 @@ image-only, 25 MB cap) for anchor upload.
 `ModeToggle`), built on the `components/ui` design system. Settings sidebar + a wrapping 9:16 frame
 grid with live per-frame status, regen, **vary**, variant strip, "set as anchor", reorder, and a
 **Cancel** button while running. Saves are **serialized and deferred during a run** (then flushed),
-and the client adopts the run's authoritative outputs; failures surface as **toasts** (sonner). WS
-events are scoped to the active run, so stale events can't resurrect cleared state.
+and the client adopts the run's authoritative outputs; failures surface as **toasts** (sonner).
+
+**Concurrent generation.** Runs are **independent and overlap**: state is tracked per frame (`inFlight[]`,
+not a single global lock), so the artist can fire a frame, then start others while it renders — each frame's
+own controls disable only while *it* generates. Three entry points all funnel through `runFrames(ids)`:
+per-frame **▶**, **🎲 vary**, a header **checkbox** + toolbar **Generate selected (N)** (batch a chosen
+subset), and **Generate all**. `runFrames` skips any frame already in flight (no double-billing) and on
+finish releases only its own frames; deferred edits flush once *everything* settles, so a full-document PUT
+can't clobber another run's write-back. Each run is bracketed by a `"*"` WS event (tracked in
+`activeRunIds[]`); WS progress is matched by **frame id** so overlapping runs route correctly, and **Cancel**
+aborts every in-flight run.
 
 **Deferred follow-ups:** a cheaper reference-capable model (Seedream v4 has a `…/v4/edit` endpoint — wire
 `editEndpoint` once its field/limit is confirmed, giving $0.03 character consistency vs Nano Banana's
