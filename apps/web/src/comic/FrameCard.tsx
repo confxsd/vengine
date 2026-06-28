@@ -97,6 +97,15 @@ export function FrameCard({ frame, index, total }: Props) {
     cardRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "center" });
   }, [livePreviewHash]);
 
+  // Keep the newest output in view: variants append to the end of the
+  // horizontally-scrolling strip, so scroll it fully right when one is added.
+  const variantStripRef = useRef<HTMLDivElement>(null);
+  const variantCount = frame.variants.length;
+  useEffect(() => {
+    const strip = variantStripRef.current;
+    if (strip) strip.scrollLeft = strip.scrollWidth;
+  }, [variantCount]);
+
   // One-shot border-sweep + brightness pop when a frame finishes generating.
   const [justRendered, setJustRendered] = useState(false);
   const prevStatus = useRef(status);
@@ -304,7 +313,7 @@ export function FrameCard({ frame, index, total }: Props) {
           The trailing tile uploads an image as an extra output (e.g. to restore a
           lost one, or seed a scene other frames continue from). */}
       {frame.variants.length > 0 && (
-        <div className="flex gap-1 overflow-x-auto pb-0.5">
+        <div ref={variantStripRef} className="flex gap-1 overflow-x-auto pb-0.5">
           {frame.variants.map((v) => {
             const selected = v.hash === previewHash;
             return (
