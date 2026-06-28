@@ -6,6 +6,8 @@ import {
   ChevronDown,
   ChevronRight,
   Dices,
+  ImagePlus,
+  Library,
   Link2,
   Play,
   Star,
@@ -61,6 +63,9 @@ export function FrameCard({ frame, index, total }: Props) {
     addStyleRefFromFrame,
     toggleFrameCharacter,
     addCharacterRefFromFrame,
+    uploadFrameRef,
+    addFrameRefFromLibrary,
+    removeFrameRef,
     setFrameContinuation,
     selectedFrameIds,
     toggleFrameSelected,
@@ -74,6 +79,7 @@ export function FrameCard({ frame, index, total }: Props) {
   const cast = project?.cast ?? [];
   const [showFinal, setShowFinal] = useState(false);
   const [editing, setEditing] = useState(false);
+  const [showRefPicker, setShowRefPicker] = useState(false);
   /** A frame with no explicit list shows the whole cast (undefined = all). */
   const inFrame = (charId: string) =>
     frame.characterIds === undefined || frame.characterIds.includes(charId);
@@ -126,6 +132,16 @@ export function FrameCard({ frame, index, total }: Props) {
     if (file) void uploadFrameOutput(frame.id, file);
     e.target.value = ""; // allow re-selecting the same file
   };
+
+  const onUploadRef = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) void uploadFrameRef(frame.id, file);
+    e.target.value = "";
+  };
+
+  // Library images not already attached to this frame (the "+ from library" pool).
+  const library = project?.library ?? [];
+  const unattachedRefs = library.filter((a) => !frame.refHashes.includes(a.hash));
 
   // Drag an image file onto the preview to set it as this frame's output.
   const [dragOver, setDragOver] = useState(false);
@@ -371,6 +387,72 @@ export function FrameCard({ frame, index, total }: Props) {
           })}
         </div>
       )}
+
+      {/* Per-frame reference images — steer ONLY this frame (composition/look
+          guidance), independent of the project-wide style anchors and shared cast. */}
+      <div className="flex flex-col gap-1">
+        <div className="flex flex-wrap items-center gap-1">
+          <span className="mr-0.5 text-[10px] font-medium uppercase tracking-wide text-faint">
+            refs
+          </span>
+          {frame.refHashes.map((hash) => (
+            <div key={hash} className="group/fref relative shrink-0">
+              <img
+                src={api.thumbUrl(hash)}
+                alt="frame reference"
+                className="h-9 w-9 rounded object-cover ring-1 ring-border"
+                title="Reference for this frame only"
+              />
+              <button
+                type="button"
+                onClick={() => removeFrameRef(frame.id, hash)}
+                aria-label="Remove this frame reference"
+                title="Remove reference"
+                className="absolute -right-1 -top-1 rounded-full bg-black/70 p-0.5 text-white/85 opacity-0 transition hover:bg-down hover:text-white group-hover/fref:opacity-100"
+              >
+                <X className="h-2.5 w-2.5" />
+              </button>
+            </div>
+          ))}
+          <label
+            title="Upload an image as a reference for this frame"
+            className="flex h-9 w-9 shrink-0 cursor-pointer items-center justify-center rounded ring-1 ring-dashed ring-border text-faint transition hover:text-accent hover:ring-accent/60"
+          >
+            <input type="file" accept="image/*" className="hidden" disabled={busy} onChange={onUploadRef} />
+            <ImagePlus className="h-3.5 w-3.5" />
+          </label>
+          {unattachedRefs.length > 0 && (
+            <button
+              type="button"
+              onClick={() => setShowRefPicker((v) => !v)}
+              title="Attach a reference from the library"
+              className={cn(
+                "flex h-9 w-9 shrink-0 items-center justify-center rounded ring-1 transition",
+                showRefPicker
+                  ? "text-accent ring-accent/60"
+                  : "text-faint ring-dashed ring-border hover:text-accent hover:ring-accent/60",
+              )}
+            >
+              <Library className="h-3.5 w-3.5" />
+            </button>
+          )}
+        </div>
+        {showRefPicker && unattachedRefs.length > 0 && (
+          <div className="grid grid-cols-5 gap-1 rounded-md border border-border bg-bg p-1.5">
+            {unattachedRefs.map((a) => (
+              <button
+                key={a.hash}
+                type="button"
+                onClick={() => addFrameRefFromLibrary(frame.id, a.hash)}
+                title={a.label ? `Attach “${a.label}”` : "Attach to this frame"}
+                className="block aspect-square overflow-hidden rounded ring-1 ring-border transition hover:ring-accent"
+              >
+                <img src={api.thumbUrl(a.hash)} alt={a.label || "library image"} className="h-full w-full object-cover" />
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
 
       {/* Scene continuity — mark THIS frame as continued from another frame; that
           source frame's image is fed in as the strongest reference when this frame

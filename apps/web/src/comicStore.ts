@@ -107,6 +107,13 @@ interface ComicState {
   /** Toggle whether a cast member appears in a frame (tri-state: undefined = whole cast). */
   toggleFrameCharacter: (frameId: string, charId: string) => void;
 
+  // Per-frame reference images — steer ONE frame, independent of style anchors & cast.
+  /** Upload an image and attach it as a reference for this frame only (also banks it). */
+  uploadFrameRef: (frameId: string, file: File) => Promise<void>;
+  /** Attach an already-banked library image as a reference for this frame. */
+  addFrameRefFromLibrary: (frameId: string, hash: string) => void;
+  removeFrameRef: (frameId: string, hash: string) => void;
+
   // House-style LoRAs
   addLora: () => void;
   patchLora: (index: number, patch: Partial<ComicLora>) => void;
@@ -431,7 +438,10 @@ export const useComic = create<ComicState>((set, get) => {
     patchStyle: (patch) => mutate((p) => ({ ...p, style: { ...p.style, ...patch } })),
 
     addFrame: () =>
-      mutate((p) => ({ ...p, frames: [...p.frames, { id: newFrameId(), prompt: "", variants: [] }] })),
+      mutate((p) => ({
+        ...p,
+        frames: [...p.frames, { id: newFrameId(), prompt: "", variants: [], refHashes: [] }],
+      })),
     // Drop the frame and clear any continuation links pointing at it, so no frame
     // is left referencing a deleted scene (compile ignores unknown ids regardless).
     removeFrame: (id) => {
@@ -581,6 +591,7 @@ export const useComic = create<ComicState>((set, get) => {
           anchorHash: undefined,
         },
         cast: p.cast.map((c) => ({ ...c, refHashes: c.refHashes.filter((h) => h !== hash) })),
+        frames: p.frames.map((f) => ({ ...f, refHashes: f.refHashes.filter((h) => h !== hash) })),
       })),
 
     addCharacter: () =>
@@ -663,6 +674,40 @@ export const useComic = create<ComicState>((set, get) => {
         : [...current, charId];
       const isWholeCast = next.length === allIds.length && allIds.every((id) => next.includes(id));
       get().patchFrame(frameId, { characterIds: isWholeCast ? undefined : next });
+    },
+
+    uploadFrameRef: async (frameId, file) => {
+      try {
+        const ref = await api.uploadAsset(file);
+        const frame = get().project?.frames.find((f) => f.id === frameId);
+        if (!frame) return;
+        mutate((p) => bankAsset(p, ref.hash, file.name)); // banked to the reusable library too
+        if (frame.refHashes.includes(ref.hash)) {
+          toast("Already a reference for this frame");
+          return;
+        }
+        get().patchFrame(frameId, { refHashes: [...frame.refHashes, ref.hash] });
+        toast.success("Frame reference added");
+      } catch (err) {
+        toast.error("Upload failed", { description: (err as Error).message });
+      }
+    },
+
+    addFrameRefFromLibrary: (frameId, hash) => {
+      const frame = get().project?.frames.find((f) => f.id === frameId);
+      if (!frame) return;
+      if (frame.refHashes.includes(hash)) {
+        toast("Already a reference for this frame");
+        return;
+      }
+      get().patchFrame(frameId, { refHashes: [...frame.refHashes, hash] });
+      toast.success("Frame reference added");
+    },
+
+    removeFrameRef: (frameId, hash) => {
+      const frame = get().project?.frames.find((f) => f.id === frameId);
+      if (!frame) return;
+      get().patchFrame(frameId, { refHashes: frame.refHashes.filter((h) => h !== hash) });
     },
 
     addLora: () =>

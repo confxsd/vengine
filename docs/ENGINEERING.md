@@ -435,10 +435,14 @@ blocking; `"shot"` = preserve the exact composition/camera and edit in place. Th
 when a continuity reference actually resolves (same gate as the compiler), so preview, compile and run stay
 identical and a dangling/self/imageless link emits nothing. Self-links, unknown ids and
 not-yet-generated sources resolve to nothing, so reordering/deleting frames never breaks a run (the store
-also clears links pointing at a removed frame). Per
+also clears links pointing at a removed frame). A fourth lever is **per-frame reference images**
+(`frame.refHashes[]`, `frameOwnReferences`): images attached to **one frame only** — composition/look
+guidance for that single panel, independent of the project-wide style anchors and the shared cast. Drawn
+from the same reusable library (upload or attach an existing entry), full weight, fed only when that frame
+generates; removing a library entry detaches them too. Per
 frame, `frameReferences` (`packages/shared/src/comic.ts`) resolves the ordered, deduped, **weighted** set
-— the continuity reference first (full weight, so it dominates), then style references (each with its
-weight), then each active cast member's refs at full weight (first
+— the continuity reference first (full weight, so it dominates), then **the frame's own refs**, then style
+references (each with its weight), then each active cast member's refs at full weight (first
 occurrence wins on dedup, so a shared image keeps its strongest/earliest weight) — gated by `frame.characterIds`
 (tri-state: `undefined` = whole cast, `[]` = none, `[ids]` = subset; unknown ids ignored so deleting a
 character never breaks a frame). That set flows as `references` (`[{hash, weight}]`) →

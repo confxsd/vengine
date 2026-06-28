@@ -95,6 +95,15 @@ export const ComicFrameSchema = z.object({
    * "different angle" request. Inert unless `continuesFrameId` resolves to an image.
    */
   continuesMode: z.enum(["shot", "restage"]).optional(),
+  /**
+   * Reference images attached to THIS frame only — composition/look guidance fed when
+   * the frame generates, independent of the project-wide style anchors and the shared
+   * cast. Use it to steer one panel ("match this image") without touching the others.
+   * Drawn from the reusable library (most-distinctive first; earlier refs weight
+   * higher), applied at full weight. Unknown hashes are ignored, so removing a library
+   * asset never breaks a frame.
+   */
+  refHashes: z.array(z.string().length(64)).default([]),
   /** The currently selected/displayed image (a hash from `variants`). The artist
    *  picks it; a run sets it to the freshest generation. */
   resultHash: z.string().length(64).optional(),
@@ -378,7 +387,12 @@ export function editReferences(
     c.refHashes.map((hash) => ({ hash, weight: DEFAULT_REFERENCE_WEIGHT })),
   );
   const byHash = new Map<string, ComicReference>();
-  for (const ref of [base, ...styleReferences(project.style), ...characterRefs]) {
+  for (const ref of [
+    base,
+    ...frameOwnReferences(frame),
+    ...styleReferences(project.style),
+    ...characterRefs,
+  ]) {
     if (!byHash.has(ref.hash)) byHash.set(ref.hash, ref);
   }
   return [...byHash.values()];
@@ -444,16 +458,23 @@ export function compileEditFrame(
   });
 }
 
+/** This frame's own attached reference images as full-weight references (its
+ *  `refHashes`, in order). Per-frame look/composition guidance, distinct from the
+ *  project-wide style anchors and the shared cast. */
+export function frameOwnReferences(frame: ComicFrame): ComicReference[] {
+  return frame.refHashes.map((hash) => ({ hash, weight: DEFAULT_REFERENCE_WEIGHT }));
+}
+
 /**
  * The full ordered, weighted reference set for one frame: the scene-continuity
  * reference first (this frame continues another's scene, so it leads at full
- * weight), then the project's style references (look consistency), then the
- * identity refs of each cast member active in the frame (character consistency,
- * full weight). Order matters — models weight earlier references more — so
- * continuity leads, style follows, characters last. Deduped by hash (first wins,
- * so an image used in two roles keeps its strongest/earliest weight and is sent
- * once). Shared by the compiler and the UI preview so what runs is exactly what
- * the artist sees.
+ * weight), then this frame's own attached references (per-frame guidance), then the
+ * project's style references (look consistency), then the identity refs of each cast
+ * member active in the frame (character consistency, full weight). Order matters —
+ * models weight earlier references more — so continuity leads, the frame's own refs
+ * follow, then style, then characters. Deduped by hash (first wins, so an image used
+ * in two roles keeps its strongest/earliest weight and is sent once). Shared by the
+ * compiler and the UI preview so what runs is exactly what the artist sees.
  */
 export function frameReferences(project: ComicProject, frame: ComicFrame): ComicReference[] {
   const ids = frame.characterIds;
@@ -465,6 +486,7 @@ export function frameReferences(project: ComicProject, frame: ComicFrame): Comic
   const byHash = new Map<string, ComicReference>();
   for (const ref of [
     ...continuityReferences(project, frame),
+    ...frameOwnReferences(frame),
     ...styleReferences(project.style),
     ...characterRefs,
   ]) {

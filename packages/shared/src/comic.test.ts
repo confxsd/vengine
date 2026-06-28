@@ -212,6 +212,40 @@ describe("compileComic", () => {
     ]);
   });
 
+  it("includes per-frame refHashes after continuity, before style + cast (deduped)", () => {
+    const anchor = "a".repeat(64);
+    const frameRef = "b".repeat(64);
+    const hero = "c".repeat(64);
+    const p = project({
+      style: { ...project().style, anchors: [{ hash: anchor, weight: 0.8 }] },
+      cast: [{ id: "hero", name: "Hero", refHashes: [hero] }],
+      frames: [{ id: "a", prompt: "the scene", refHashes: [frameRef] }],
+    });
+    expect(frameReferences(p, p.frames[0]!)).toEqual([
+      { hash: frameRef, weight: 1 }, // per-frame ref leads (no continuity here)
+      { hash: anchor, weight: 0.8 },
+      { hash: hero, weight: 1 },
+    ]);
+    // A frame ref also used as a style anchor dedupes to its first (frame) position.
+    const shared = project({
+      style: { ...project().style, anchors: [{ hash: frameRef, weight: 0.3 }] },
+      frames: [{ id: "a", prompt: "x", refHashes: [frameRef] }],
+    });
+    expect(frameReferences(shared, shared.frames[0]!)).toEqual([{ hash: frameRef, weight: 1 }]);
+  });
+
+  it("only attaches a frame's refHashes to that frame, not its siblings", () => {
+    const frameRef = "b".repeat(64);
+    const p = project({
+      frames: [
+        { id: "a", prompt: "lead", refHashes: [frameRef] },
+        { id: "b", prompt: "other" },
+      ],
+    });
+    expect(frameReferences(p, p.frames[0]!)).toEqual([{ hash: frameRef, weight: 1 }]);
+    expect(frameReferences(p, p.frames[1]!)).toEqual([]); // sibling untouched
+  });
+
   it("styleReferences migrates legacy anchorHash but prefers explicit anchors", () => {
     const legacy = "a".repeat(64);
     const a = "b".repeat(64);
