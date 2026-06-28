@@ -518,10 +518,12 @@ relinked — the executor would need to await in-flight on failure).
 
 ## 17. AI Text Assist (implemented)
 
-A field-aware "optimize my text" layer over every prose input in the Comic Studio — enrich, fix
-grammar, or shorten the story, settings, style theme, per-frame prompts, the prompt template, and the
-negative prompt. It is **additive and opt-in**: when no text-model key is set the buttons simply don't
-render, so nothing depends on it.
+A field-aware "fix my text" layer over every prose input in the Comic Studio — polish, fix
+grammar, enrich, or shorten the story, settings, style theme, per-frame prompts, the prompt template,
+and the negative prompt. The default action everywhere is the **conservative `polish`** (light
+grammar/clarity fix, no new content), so the AI never imposes its own style — `enrich` is an explicit
+opt-in. It is **additive and opt-in**: when no text-model key is set the buttons simply don't render,
+so nothing depends on it.
 
 **Text/LLM provider abstraction.** A textual sibling to the image `ModelAdapter`:
 `TextAdapter` (`packages/providers/src/text/types.ts`) normalizes a neutral `ChatMessage[]` and hides
@@ -534,19 +536,21 @@ is the clean reply) and require `temperature: 1`, so the adapter pins that and u
 adapter; the routes and UI don't change.
 
 **Shared config (single source of truth).** `packages/shared/src/assist.ts` holds the `AssistField`
-and `AssistMode` enums, per-field metadata (`defaultMode` + offered `modes` — e.g. the negative prompt
-only offers *enrich*, the template defaults to the safe *grammar*), the `AssistRequestSchema` (a
-`refine` rejects a mode not offered for the field), and **`buildAssistContext(project, field, frame?)`**
+and `AssistMode` enums (`polish` · `grammar` · `enrich` · `shorten`, conservative → heavy), per-field
+metadata (`defaultMode` is `polish` for prose, `grammar` for the structural template), the
+`AssistRequestSchema` (a `refine` rejects a mode not offered for the field), and **`buildAssistContext(project, field, frame?)`**
 — a deterministic builder that gathers the surrounding material most useful for revising *this* field
 (a frame prompt gets story + settings + style + its position + active cast names), so the model always
 knows which input it is editing.
 
 **Seeded prompts (server).** `apps/server/src/assist.ts` composes the system prompt from three
-config maps: a `GLOBAL_SYSTEM` (no-text 9:16 comic rules, output-only-the-value discipline,
-`{token}` preservation), a per-field `FIELD_PROMPTS` ("what this input is"), and a per-mode
-`MODE_PROMPTS` ("what to do"). Empty input + *enrich* is handled by the prompt itself — the model
-**drafts a first version from context**, so the AI can seed a starter prompt, not just polish one. The
-reply is run through `stripWrappingQuotes`. Routes: `POST /api/assist` (validated, key/model resolved
+config maps: a `GLOBAL_SYSTEM` (a strict *conservative copy editor* charter — smallest change, keep the
+author's words/length/formatting, add no new ideas or art direction, never fold the context's style or
+setting into the field), a per-field `FIELD_PROMPTS` ("what this input is"), and a per-mode
+`MODE_PROMPTS` ("what to do"). The context is passed as background only and explicitly must not be
+copied into the output (this was the fix for early over-eager rewrites). Empty input + *enrich* still
+lets the model **draft a short, plain first version from context**. The reply is run through
+`stripWrappingQuotes`. Routes: `POST /api/assist` (validated, key/model resolved
 server-side, vendor errors surfaced as 502/503) and `GET /api/assist/config` (availability probe).
 Text providers are wired in `runtime.ts` (`rt.textProviders`); the default model id is `kimi/k2`.
 

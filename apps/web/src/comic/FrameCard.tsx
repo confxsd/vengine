@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import {
   ArrowLeft,
   ArrowRight,
+  Check,
   ChevronDown,
   ChevronRight,
   Dices,
@@ -58,7 +59,10 @@ export function FrameCard({ frame, index, total }: Props) {
     toggleFrameCharacter,
     addCharacterRefFromFrame,
     setFrameContinuation,
+    selectedFrameIds,
+    toggleFrameSelected,
   } = useComic();
+  const selected = selectedFrameIds.includes(frame.id);
   const openLightbox = useStudio((s) => s.openLightbox);
   const project = useComic((s) => s.project);
   const cast = project?.cast ?? [];
@@ -113,12 +117,32 @@ export function FrameCard({ frame, index, total }: Props) {
   return (
     <Card
       ref={cardRef}
-      className="flex w-56 shrink-0 flex-col gap-2 p-3 shadow-lg shadow-black/20 ring-1 ring-border"
+      className={cn(
+        "flex w-56 shrink-0 flex-col gap-2 p-3 shadow-lg shadow-black/20 ring-1",
+        selected ? "ring-2 ring-accent" : "ring-border",
+      )}
     >
       <div className="flex items-center justify-between">
-        <span className="text-xs font-semibold text-muted">
-          Frame {index + 1}
-        </span>
+        <div className="flex items-center gap-1.5">
+          <button
+            type="button"
+            role="checkbox"
+            aria-checked={selected}
+            onClick={() => toggleFrameSelected(frame.id)}
+            title={selected ? "Unselect frame" : "Select frame for batch generation"}
+            className={cn(
+              "flex h-3.5 w-3.5 items-center justify-center rounded-[4px] ring-1 transition-colors",
+              selected
+                ? "bg-accent text-accent-contrast ring-accent"
+                : "ring-border hover:ring-border-strong",
+            )}
+          >
+            {selected && <Check className="h-2.5 w-2.5" strokeWidth={3} />}
+          </button>
+          <span className="text-xs font-semibold text-muted">
+            Frame {index + 1}
+          </span>
+        </div>
         <div className="flex items-center gap-0.5">
           <span
             className={cn("mr-1 h-2 w-2 rounded-full", STATUS_DOT[status])}
@@ -235,7 +259,7 @@ export function FrameCard({ frame, index, total }: Props) {
 
       <AssistTextarea
         field="framePrompt"
-        autoGrow
+        resizable
         expandable
         editorTitle={`Frame ${index + 1} · scene`}
         placeholder="Describe this frame's scene…"

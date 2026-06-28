@@ -22,8 +22,12 @@ export const ASSIST_FIELDS = [
 ] as const;
 export type AssistField = (typeof ASSIST_FIELDS)[number];
 
-/** The kinds of revision the AI can perform. */
-export const ASSIST_MODES = ["enrich", "grammar", "shorten"] as const;
+/**
+ * The kinds of revision the AI can perform, ordered conservative → heavy. The
+ * default for every field is the light-touch `polish`; `enrich` is opt-in and
+ * still guard-railed (no new artistic direction). See the server prompts.
+ */
+export const ASSIST_MODES = ["polish", "grammar", "enrich", "shorten"] as const;
 export type AssistMode = (typeof ASSIST_MODES)[number];
 
 export interface AssistModeMeta {
@@ -35,15 +39,20 @@ export interface AssistModeMeta {
 }
 
 export const ASSIST_MODE_META: Record<AssistMode, AssistModeMeta> = {
-  enrich: {
-    id: "enrich",
-    label: "Enrich",
-    hint: "Expand with vivid, on-context detail",
+  polish: {
+    id: "polish",
+    label: "Polish",
+    hint: "Light fix: grammar, clarity & flow — no new content",
   },
   grammar: {
     id: "grammar",
     label: "Fix grammar",
-    hint: "Correct grammar & spelling, keep meaning",
+    hint: "Spelling & grammar only, wording untouched",
+  },
+  enrich: {
+    id: "enrich",
+    label: "Enrich",
+    hint: "Add a little detail (stays on your subject)",
   },
   shorten: {
     id: "shorten",
@@ -62,39 +71,40 @@ export interface AssistFieldMeta {
   modes: AssistMode[];
 }
 
+// Default is always the conservative `polish`; enrich/shorten are opt-in extras.
 export const ASSIST_FIELD_META: Record<AssistField, AssistFieldMeta> = {
-  story: { id: "story", label: "story", defaultMode: "enrich", modes: ["enrich", "grammar", "shorten"] },
+  story: { id: "story", label: "story", defaultMode: "polish", modes: ["polish", "grammar", "enrich", "shorten"] },
   settings: {
     id: "settings",
     label: "settings",
-    defaultMode: "enrich",
-    modes: ["enrich", "grammar", "shorten"],
+    defaultMode: "polish",
+    modes: ["polish", "grammar", "enrich", "shorten"],
   },
   styleTheme: {
     id: "styleTheme",
     label: "style theme",
-    defaultMode: "enrich",
-    modes: ["enrich", "grammar", "shorten"],
+    defaultMode: "polish",
+    modes: ["polish", "grammar", "enrich", "shorten"],
   },
   framePrompt: {
     id: "framePrompt",
     label: "frame prompt",
-    defaultMode: "enrich",
-    modes: ["enrich", "grammar", "shorten"],
+    defaultMode: "polish",
+    modes: ["polish", "grammar", "enrich", "shorten"],
   },
-  // A template is structural ({tokens}); default to the safe edit, still allow enrich.
+  // A template is structural ({tokens}); only ever fix it mechanically.
   promptTemplate: {
     id: "promptTemplate",
     label: "prompt template",
     defaultMode: "grammar",
-    modes: ["grammar", "enrich"],
+    modes: ["grammar", "polish"],
   },
-  // A comma list of things to exclude — only "enrich" (extend the list) makes sense.
+  // A comma list of exclusions: tidy it (polish) or extend it (enrich).
   negativePrompt: {
     id: "negativePrompt",
     label: "negative prompt",
-    defaultMode: "enrich",
-    modes: ["enrich"],
+    defaultMode: "polish",
+    modes: ["polish", "enrich"],
   },
 };
 

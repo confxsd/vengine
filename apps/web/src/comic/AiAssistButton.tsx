@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { Check, ChevronDown, Loader2, Sparkles } from "lucide-react";
 import { toast } from "sonner";
 import {
@@ -33,16 +34,63 @@ export function AiAssistButton({ field, value, onApply, context, className }: Pr
   const [busy, setBusy] = useState<AssistMode | null>(null);
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  // Fixed viewport coords for the portalled menu; null until measured.
+  const [coords, setCoords] = useState<{ top: number; left: number } | null>(null);
   const meta = ASSIST_FIELD_META[field];
+
+  // Place the menu next to the trigger, flipping/clamping to stay on-screen.
+  const place = useCallback(() => {
+    const trigger = ref.current;
+    const menu = menuRef.current;
+    if (!trigger || !menu) return;
+    const t = trigger.getBoundingClientRect();
+    const m = menu.getBoundingClientRect();
+    const gap = 6;
+    const margin = 8;
+
+    // Prefer opening upward (over the field); flip down when cramped above.
+    const fitsAbove = t.top >= m.height + gap + margin;
+    const top = fitsAbove ? t.top - gap - m.height : t.bottom + gap;
+
+    // Align the menu's right edge to the trigger, then clamp into the viewport.
+    const left = Math.min(
+      Math.max(margin, t.right - m.width),
+      window.innerWidth - margin - m.width,
+    );
+
+    setCoords({
+      top: Math.min(Math.max(margin, top), window.innerHeight - margin - m.height),
+      left,
+    });
+  }, []);
+
+  useLayoutEffect(() => {
+    if (!open) {
+      setCoords(null);
+      return;
+    }
+    place();
+  }, [open, place]);
 
   useEffect(() => {
     if (!open) return;
     const onDown = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+      const target = e.target as Node;
+      if (ref.current?.contains(target) || menuRef.current?.contains(target)) return;
+      setOpen(false);
     };
+    const reposition = () => place();
     window.addEventListener("mousedown", onDown);
-    return () => window.removeEventListener("mousedown", onDown);
-  }, [open]);
+    // Keep the menu anchored as the page scrolls or the window resizes.
+    window.addEventListener("scroll", reposition, true);
+    window.addEventListener("resize", reposition);
+    return () => {
+      window.removeEventListener("mousedown", onDown);
+      window.removeEventListener("scroll", reposition, true);
+      window.removeEventListener("resize", reposition);
+    };
+  }, [open, place]);
 
   if (!available) return null;
 
@@ -99,31 +147,45 @@ export function AiAssistButton({ field, value, onApply, context, className }: Pr
           <ChevronDown className="h-3 w-3" />
         </button>
       )}
-      {open && (
-        <div className="absolute bottom-7 right-0 z-20 min-w-44 overflow-hidden rounded-md border border-border bg-surface shadow-lg shadow-black/30">
-          {meta.modes.map((m) => {
-            const mm = ASSIST_MODE_META[m];
-            return (
-              <button
-                key={m}
-                type="button"
-                onClick={() => run(m)}
-                className="flex w-full flex-col items-start gap-0.5 px-2.5 py-1.5 text-left transition-colors hover:bg-elevated"
-              >
-                <span className="flex items-center gap-1.5 text-[11px] font-medium text-text">
-                  {m === meta.defaultMode ? (
-                    <Check className="h-3 w-3 text-accent" />
-                  ) : (
-                    <span className="w-3" />
-                  )}
-                  {mm.label}
-                </span>
-                <span className="pl-[18px] text-[10px] leading-tight text-faint">{mm.hint}</span>
-              </button>
-            );
-          })}
-        </div>
-      )}
+      {open &&
+        createPortal(
+          <div
+            ref={menuRef}
+            // Stop the wrapping <label> from stealing focus / forwarding the click.
+            onMouseDown={(e) => e.stopPropagation()}
+            style={coords ? { top: coords.top, left: coords.left } : undefined}
+            className={cn(
+              // Portalled to <body> so it escapes the field's stacking context and
+              // can't be painted over by the preview panel; z high to clear modals.
+              "fixed z-[60] min-w-44 overflow-hidden rounded-md border border-border bg-surface shadow-lg shadow-black/30",
+              // Hidden until measured/placed to avoid a flash at the wrong spot.
+              coords ? "opacity-100" : "pointer-events-none opacity-0",
+            )}
+          >
+            {meta.modes.map((m) => {
+              const mm = ASSIST_MODE_META[m];
+              return (
+                <button
+                  key={m}
+                  type="button"
+                  onClick={() => run(m)}
+                  className="flex w-full flex-col items-start gap-0.5 px-2.5 py-1.5 text-left transition-colors hover:bg-elevated"
+                >
+                  <span className="flex items-center gap-1.5 text-[11px] font-medium text-text">
+                    {m === meta.defaultMode ? (
+                      <Check className="h-3 w-3 text-accent" />
+                    ) : (
+                      <span className="w-3" />
+                    )}
+                    {mm.label}
+                  </span>
+                  <span className="pl-[18px] text-[10px] leading-tight text-faint">{mm.hint}</span>
+                </button>
+              );
+            })}
+          </div>,
+          document.body,
+        )}
     </div>
   );
 }

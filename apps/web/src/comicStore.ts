@@ -41,6 +41,8 @@ interface ComicState {
   liveStatus: Record<string, NodeRunStatus>;
   /** Live preview hashes streamed during a run (override the selection while running). */
   livePreview: Record<string, string>;
+  /** Frames the artist has ticked for a batch generation (transient, not persisted). */
+  selectedFrameIds: string[];
 
   init: () => Promise<void>;
   loadProject: (id: string) => Promise<void>;
@@ -94,10 +96,16 @@ interface ComicState {
   patchLora: (index: number, patch: Partial<ComicLora>) => void;
   removeLora: (index: number) => void;
 
+  // Batch selection — tick frames, then generate just those (concurrently).
+  toggleFrameSelected: (id: string) => void;
+  clearSelection: () => void;
+
   setQuality: (q: "preview" | "final") => void;
   doPlan: () => Promise<void>;
   runAll: () => Promise<void>;
   runOne: (id: string) => Promise<void>;
+  /** Generate every currently-selected frame in one run. */
+  runSelected: () => Promise<void>;
   cancelRun: () => Promise<void>;
   snapshot: () => Promise<void>;
 
@@ -270,6 +278,7 @@ export const useComic = create<ComicState>((set, get) => {
     status: "ready",
     liveStatus: {},
     livePreview: {},
+    selectedFrameIds: [],
 
     init: async () => {
       if (initialized) return; // a remount must not open a second WS / reseed
@@ -296,12 +305,12 @@ export const useComic = create<ComicState>((set, get) => {
 
     loadProject: async (id) => {
       const project = await api.comic(id);
-      set({ project, plan: null, liveStatus: {}, livePreview: {}, saveState: "saved", status: "ready" });
+      set({ project, plan: null, liveStatus: {}, livePreview: {}, selectedFrameIds: [], saveState: "saved", status: "ready" });
     },
 
     createProject: async (name) => {
       const project = await api.createComic(name);
-      set({ project, plan: null, liveStatus: {}, livePreview: {}, saveState: "saved", status: "ready" });
+      set({ project, plan: null, liveStatus: {}, livePreview: {}, selectedFrameIds: [], saveState: "saved", status: "ready" });
       await refreshList();
     },
 
@@ -315,13 +324,15 @@ export const useComic = create<ComicState>((set, get) => {
       mutate((p) => ({ ...p, frames: [...p.frames, { id: newFrameId(), prompt: "", variants: [] }] })),
     // Drop the frame and clear any continuation links pointing at it, so no frame
     // is left referencing a deleted scene (compile ignores unknown ids regardless).
-    removeFrame: (id) =>
+    removeFrame: (id) => {
+      set({ selectedFrameIds: get().selectedFrameIds.filter((fid) => fid !== id) });
       mutate((p) => ({
         ...p,
         frames: p.frames
           .filter((f) => f.id !== id)
           .map((f) => (f.continuesFrameId === id ? { ...f, continuesFrameId: undefined } : f)),
-      })),
+      }));
+    },
     patchFrame: (id, patch) =>
       mutate((p) => ({
         ...p,
@@ -509,6 +520,16 @@ export const useComic = create<ComicState>((set, get) => {
     removeLora: (index) =>
       get().patchStyle({ loras: (get().project?.style.loras ?? []).filter((_, i) => i !== index) }),
 
+    toggleFrameSelected: (id) => {
+      const current = get().selectedFrameIds;
+      set({
+        selectedFrameIds: current.includes(id)
+          ? current.filter((fid) => fid !== id)
+          : [...current, id],
+      });
+    },
+    clearSelection: () => set({ selectedFrameIds: [] }),
+
     setQuality: (quality) => set({ quality, plan: null }),
 
     doPlan: async () => {
@@ -524,6 +545,17 @@ export const useComic = create<ComicState>((set, get) => {
 
     runAll: async () => runFrames(get().project?.frames.map((f) => f.id) ?? []),
     runOne: async (id) => runFrames([id]),
+
+    // Run only the ticked frames, in document order, then clear the selection.
+    runSelected: async () => {
+      const order = new Map((get().project?.frames ?? []).map((f, i) => [f.id, i]));
+      const ids = get()
+        .selectedFrameIds.filter((id) => order.has(id))
+        .sort((a, b) => order.get(a)! - order.get(b)!);
+      if (ids.length === 0) return;
+      await runFrames(ids);
+      set({ selectedFrameIds: [] });
+    },
 
     cancelRun: async () => {
       const runId = get().activeRunId;

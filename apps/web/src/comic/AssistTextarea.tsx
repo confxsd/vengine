@@ -22,8 +22,11 @@ interface Props extends TextareaProps {
   /**
    * Grow with content (up to a max, then scroll) instead of a fixed height.
    * Uses native CSS `field-sizing`; falls back to the min height elsewhere.
+   * Ignored when `resizable` is set (manual sizing takes precedence).
    */
   autoGrow?: boolean;
+  /** Let the user drag the bottom edge to resize the field vertically. */
+  resizable?: boolean;
   /** Show an expand control that opens a roomy focused editor overlay. */
   expandable?: boolean;
   /** Title shown in the focused editor's header (defaults to the placeholder). */
@@ -34,8 +37,8 @@ interface Props extends TextareaProps {
  * A `Textarea` with an inline AI assist button. The single integration point for
  * adding AI text help to a field — callers just swap `onChange`/`value` for
  * `onValueChange`/`value`. Reserves bottom padding so text never sits under the
- * button. Optionally grows with content and offers an "expand" control that opens
- * a focused, full-size editor overlay for comfortable long-form writing.
+ * button. Optionally grows with content, can be dragged to resize, and offers an
+ * "expand" control that opens a focused, full-size editor overlay.
  */
 export const AssistTextarea = forwardRef<HTMLTextAreaElement, Props>(
   (
@@ -46,6 +49,7 @@ export const AssistTextarea = forwardRef<HTMLTextAreaElement, Props>(
       context,
       className,
       autoGrow,
+      resizable,
       expandable,
       editorTitle,
       placeholder,
@@ -64,7 +68,11 @@ export const AssistTextarea = forwardRef<HTMLTextAreaElement, Props>(
           onChange={(e) => onValueChange(e.target.value)}
           className={cn(
             "pb-8",
-            autoGrow && "max-h-64 min-h-20 overflow-y-auto [field-sizing:content]",
+            // Drag-to-resize wins over auto-grow: the explicit height the user
+            // sets and CSS `field-sizing` fight each other, so pick one.
+            resizable
+              ? "min-h-20 resize-y overflow-y-auto"
+              : autoGrow && "max-h-64 min-h-20 overflow-y-auto [field-sizing:content]",
             expandable && "pr-9",
             className,
           )}
@@ -85,7 +93,14 @@ export const AssistTextarea = forwardRef<HTMLTextAreaElement, Props>(
           </button>
         )}
 
-        <AiAssistButton field={field} value={value} onApply={onValueChange} context={context} />
+        <AiAssistButton
+          field={field}
+          value={value}
+          onApply={onValueChange}
+          context={context}
+          // Keep the bottom-right corner clear for the native resize grip.
+          className={resizable ? "left-1.5 right-auto" : undefined}
+        />
 
         {expanded && (
           <FocusedEditor

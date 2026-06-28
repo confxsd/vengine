@@ -30,6 +30,9 @@ export function ComicStudio() {
     setQuality,
     doPlan,
     runAll,
+    runSelected,
+    selectedFrameIds,
+    clearSelection,
     cancelRun,
     snapshot,
     running,
@@ -38,6 +41,7 @@ export function ComicStudio() {
     status,
     setName,
   } = useComic();
+  const selectedCount = selectedFrameIds.length;
 
   useEffect(() => {
     void init();
@@ -135,6 +139,28 @@ export function ComicStudio() {
             <X className="h-3.5 w-3.5" />
             Cancel
           </Button>
+        )}
+        {selectedCount > 0 && !running && (
+          <>
+            <Button
+              variant="secondary"
+              size="lg"
+              onClick={clearSelection}
+              title="Clear frame selection"
+            >
+              <X className="h-3.5 w-3.5" />
+              Clear ({selectedCount})
+            </Button>
+            <Button
+              variant="accent"
+              size="lg"
+              onClick={() => void runSelected()}
+              title="Generate the selected frames"
+            >
+              <Play className="h-3.5 w-3.5 fill-current" />
+              Generate selected ({selectedCount})
+            </Button>
+          </>
         )}
         <Button
           variant="accent"

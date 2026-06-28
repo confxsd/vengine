@@ -14,13 +14,20 @@ import type { Runtime } from "./runtime.js";
 const DEFAULT_TEXT_MODEL = "kimi/k2";
 
 /** Shared rules every revision must obey, regardless of field or mode. */
-const GLOBAL_SYSTEM = `You are the writing assistant inside vengine, a studio for creating contemporary-art comics: vertical 9:16 single drawings, one image per frame, with NO text, letters, captions, or speech bubbles rendered inside the image.
-Your job is to revise ONE text field the author is editing.
-Strict output rules:
-- Return ONLY the revised field value — no preamble, no explanation, no quotes, no markdown, no labels.
-- Preserve the author's language, voice, and intent.
-- Keep any {tokens} written in curly braces exactly as-is.
-- Be concrete and evocative but never bloated; never invent on-image text, signage, or brand names.`;
+const GLOBAL_SYSTEM = `You are a careful, conservative copy editor inside vengine, a studio for contemporary-art comics (vertical 9:16 single drawings, no text rendered in the image).
+You revise ONE text field the author is editing. Your job is to FIX it, not to rewrite it.
+
+Be minimal and faithful:
+- Make the SMALLEST change that achieves the task. If the text is already fine, return it unchanged.
+- Keep the author's own words, phrasing, voice, meaning, and intent. Do not paraphrase what is already correct.
+- Keep roughly the same length and the same formatting and line breaks.
+- Do NOT add new ideas, subjects, objects, imagery, mood, or artistic direction the author did not write.
+- Do NOT change the medium, art style, palette, or genre. Add no creative "flavor" of your own.
+- Keep any {tokens} in curly braces exactly as-is. Never invent on-image text, signage, or brand names.
+
+Output rules:
+- Return ONLY the revised field value — no preamble, explanation, quotes, markdown, or labels.
+- The Context provided is background ONLY. NEVER copy the visual style, setting, or any context value into this field; those are applied elsewhere.`;
 
 /** What each field IS — so the model revises it in the right register. */
 const FIELD_PROMPTS: Record<AssistField, string> = {
@@ -38,13 +45,16 @@ const FIELD_PROMPTS: Record<AssistField, string> = {
     "This field is the NEGATIVE prompt — a comma-separated list of things to keep OUT of the image. Output ONLY a comma-separated list of concise terms (no sentences).",
 };
 
-/** What each mode DOES to the field's current value. */
+/** What each mode DOES to the field's current value (conservative by default). */
 const MODE_PROMPTS: Record<AssistMode, string> = {
-  enrich:
-    "Enrich it: add vivid, specific, on-context detail and visual concreteness while staying faithful to the author's idea. If the current value is empty, draft a strong first version from the context.",
+  polish:
+    "Lightly fix grammar, spelling, punctuation, and clearly awkward phrasing — and nothing else. Keep the author's words, order, length, and meaning wherever they already work. Add no new content. If it is already clean, return it unchanged.",
   grammar:
-    "Fix grammar, spelling, and punctuation only. Keep the wording, structure, and meaning as close to the original as possible.",
-  shorten: "Make it more concise and punchy without losing the essential meaning.",
+    "Correct ONLY grammar, spelling, and punctuation. Do not rephrase, reorder, or change word choice or length.",
+  enrich:
+    "Add at most a few concrete details to flesh out only the vague parts, staying strictly on the author's existing subject, tone, and intent. Keep their wording and roughly their length; introduce no new art style, medium, palette, mood, or motif. If the current value is empty, write a short, plain first draft from the context.",
+  shorten:
+    "Remove redundancy to make it more concise. Keep the author's wording, meaning, and intent; add nothing.",
 };
 
 export function buildSystemPrompt(field: AssistField, mode: AssistMode): string {
@@ -55,12 +65,12 @@ export function buildUserMessage(text: string, context?: Record<string, string>)
   const parts: string[] = [];
   const entries = Object.entries(context ?? {});
   if (entries.length) {
-    parts.push("Context (use it to inform the revision; do NOT echo it back):");
+    parts.push("Context (background only — do NOT copy any of it into your answer):");
     for (const [key, value] of entries) parts.push(`- ${key}: ${value}`);
     parts.push("");
   }
   const trimmed = text.trim();
-  parts.push(trimmed ? `Current value:\n${trimmed}` : "The current value is empty — write one from scratch.");
+  parts.push(trimmed ? `Current value (revise this):\n${trimmed}` : "The current value is empty.");
   return parts.join("\n");
 }
 
