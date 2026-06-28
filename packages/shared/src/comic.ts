@@ -104,6 +104,20 @@ export const ComicFrameSchema = z.object({
    * asset never breaks a frame.
    */
   refHashes: z.array(z.string().length(64)).default([]),
+  /**
+   * How this frame's identity/style references (its own `refHashes` + the project's
+   * style anchors + active cast) are used by an edit-capable model — the lever that
+   * stops a reference image from silently pinning the composition (see
+   * `referenceDirective`):
+   *   "compose" → references define character identity, wardrobe, palette and art
+   *               STYLE only; the prompt fully drives camera, layout and posing
+   *               (the industry-standard default — consistent look, free composition).
+   *   "match"   → also reproduce the reference's composition/camera (copy a layout).
+   * Undefined defaults to "compose" (`DEFAULT_REFERENCE_MODE`). Inert when the frame
+   * feeds no identity references, and ignored when the frame is a continuation (the
+   * continuity link governs composition via `continuesMode` instead).
+   */
+  referenceMode: z.enum(["compose", "match"]).optional(),
   /** The currently selected/displayed image (a hash from `variants`). The artist
    *  picks it; a run sets it to the freshest generation. */
   resultHash: z.string().length(64).optional(),
@@ -155,7 +169,30 @@ export const DEFAULT_CONTINUES_MODE: ContinuesMode = "restage";
 export function continuityDirective(mode: ContinuesMode): string {
   return mode === "shot"
     ? "Continuity: the reference image is THIS exact shot — preserve its composition, camera angle and framing, and change only what the description above specifies."
-    : "Continuity: the reference image is the previous panel of this same scene — keep its setting, lighting, color palette, character designs and wardrobe consistent, but RE-STAGE it as a new composition with its own camera angle and blocking exactly as described above. Do not copy the previous panel's framing, camera or poses.";
+    : "Continuity: the reference image is the previous panel of this same scene. Treat it ONLY as a reference for setting, lighting, color palette, character design and wardrobe — NOT as a layout to keep. Build an entirely NEW composition with its own camera angle, framing and blocking exactly as described above. The new panel may contain different, additional or fewer characters than the reference: introduce and arrange every character the description names, each as their own distinct figure. Do NOT simply repaint, recolor or swap the existing figure, do not drop a newly described character, and do not copy the previous panel's framing, camera or poses.";
+}
+
+/** How a frame's identity/style references steer it. See `ComicFrameSchema.referenceMode`. */
+export type ReferenceMode = "compose" | "match";
+
+/** Default reference intent: `"compose"` — references lock identity & style, the prompt
+ *  owns composition. The industry-standard expectation (character LoRA / IP-Adapter /
+ *  `--cref`): feeding a reference must NOT silently copy its layout. */
+export const DEFAULT_REFERENCE_MODE: ReferenceMode = "compose";
+
+/**
+ * The directive injected into a frame's prompt telling an edit-capable model HOW to
+ * use its identity/style reference images (cast portraits, style anchors, per-frame
+ * refs). Without it, an edit endpoint treats any supplied image as a canvas to
+ * reproduce — so a character/style reference silently pins the composition and the
+ * prompt can't move the camera or restage the shot (the root cause of "it just keeps
+ * generating the same image"). Returned as a trailing directive so the frame's own
+ * description still leads.
+ */
+export function referenceDirective(mode: ReferenceMode): string {
+  return mode === "match"
+    ? "Reference images: reproduce the composition, camera angle and layout of the reference image(s), changing only what the description above specifies."
+    : "Reference images: use the attached images for CHARACTER IDENTITY (faces, bodies, wardrobe), COLOR PALETTE and ART STYLE only. Do NOT copy their composition, camera angle, cropping, poses or layout — build an entirely new image with the composition, camera, staging and posing described above.";
 }
 
 /** A frame's current still image: the selected result, else its newest variant. */
@@ -284,12 +321,20 @@ export function composeFramePrompt(project: ComicProject, frame: ComicFrame): st
     .filter((l) => !/^\s*\p{L}[\p{L} ]*:\s*$/u.test(l));
   const base = kept.join("\n").replace(/\n{3,}/g, "\n\n").trim();
 
-  // Append the continuity directive only when a prior frame's image is actually fed
-  // in as a reference (same gate as the compiler), so the edit model is told how to
-  // use it. Gating on `continuityReferences` keeps preview, compile and run identical
-  // and emits nothing for a dangling/self/imageless link.
-  if (continuityReferences(project, frame).length === 0) return base;
-  const directive = continuityDirective(frame.continuesMode ?? DEFAULT_CONTINUES_MODE);
+  // Append exactly one "how to use the reference images" directive, so an edit-capable
+  // model knows whether a supplied image is a scene to continue, a layout to copy, or
+  // just an identity/style cue — otherwise it silently reproduces whatever it's given.
+  // Gated on the same reference sets the compiler feeds, so preview/compile/run match.
+  //   • A resolved continuity link governs composition → continuity directive.
+  //   • Otherwise, any identity/style references → reference directive (compose/match).
+  // Continuity wins so a frame never carries two, possibly conflicting, directives.
+  let directive: string | undefined;
+  if (continuityReferences(project, frame).length > 0) {
+    directive = continuityDirective(frame.continuesMode ?? DEFAULT_CONTINUES_MODE);
+  } else if (identityReferences(project, frame).length > 0) {
+    directive = referenceDirective(frame.referenceMode ?? DEFAULT_REFERENCE_MODE);
+  }
+  if (!directive) return base;
   return base ? `${base}\n\n${directive}` : directive;
 }
 
@@ -466,17 +511,14 @@ export function frameOwnReferences(frame: ComicFrame): ComicReference[] {
 }
 
 /**
- * The full ordered, weighted reference set for one frame: the scene-continuity
- * reference first (this frame continues another's scene, so it leads at full
- * weight), then this frame's own attached references (per-frame guidance), then the
- * project's style references (look consistency), then the identity refs of each cast
- * member active in the frame (character consistency, full weight). Order matters —
- * models weight earlier references more — so continuity leads, the frame's own refs
- * follow, then style, then characters. Deduped by hash (first wins, so an image used
- * in two roles keeps its strongest/earliest weight and is sent once). Shared by the
- * compiler and the UI preview so what runs is exactly what the artist sees.
+ * The frame's identity/style references — everything that defines its *look* rather
+ * than continuing a prior scene: this frame's own attached refs first (per-frame
+ * guidance), then the project's style references (look consistency), then the identity
+ * refs of each active cast member (character consistency, full weight). Ordered
+ * (earlier = stronger) and deduped by hash (first wins). This is the set governed by
+ * `referenceMode`/`referenceDirective`; `frameReferences` prepends scene continuity.
  */
-export function frameReferences(project: ComicProject, frame: ComicFrame): ComicReference[] {
+export function identityReferences(project: ComicProject, frame: ComicFrame): ComicReference[] {
   const ids = frame.characterIds;
   const activeCast =
     ids === undefined ? project.cast : project.cast.filter((c) => ids.includes(c.id));
@@ -485,10 +527,29 @@ export function frameReferences(project: ComicProject, frame: ComicFrame): Comic
   );
   const byHash = new Map<string, ComicReference>();
   for (const ref of [
-    ...continuityReferences(project, frame),
     ...frameOwnReferences(frame),
     ...styleReferences(project.style),
     ...characterRefs,
+  ]) {
+    if (!byHash.has(ref.hash)) byHash.set(ref.hash, ref);
+  }
+  return [...byHash.values()];
+}
+
+/**
+ * The full ordered, weighted reference set for one frame: the scene-continuity
+ * reference first (this frame continues another's scene, so it leads at full weight),
+ * then the frame's identity/style references (own refs → style → active cast). Order
+ * matters — models weight earlier references more — so continuity leads, the frame's
+ * own refs follow, then style, then characters. Deduped by hash (first wins, so an
+ * image used in two roles keeps its strongest/earliest weight and is sent once).
+ * Shared by the compiler and the UI preview so what runs is exactly what the artist sees.
+ */
+export function frameReferences(project: ComicProject, frame: ComicFrame): ComicReference[] {
+  const byHash = new Map<string, ComicReference>();
+  for (const ref of [
+    ...continuityReferences(project, frame),
+    ...identityReferences(project, frame),
   ]) {
     if (!byHash.has(ref.hash)) byHash.set(ref.hash, ref);
   }

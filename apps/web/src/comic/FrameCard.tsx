@@ -26,7 +26,7 @@ import { useComic } from "../comicStore";
 import { useStudio } from "../store";
 import { api } from "../api";
 import type { NodeRunStatus } from "../types";
-import { Card, IconButton, Input, Select } from "../components/ui";
+import { Card, IconButton, Input, Segmented, Select } from "../components/ui";
 import { AssistTextarea } from "./AssistTextarea";
 import { EditFrameModal } from "./EditFrameModal";
 import { cn } from "@/lib/cn";
@@ -103,7 +103,7 @@ export function FrameCard({ frame, index, total }: Props) {
   const variantCount = frame.variants.length;
   useEffect(() => {
     const strip = variantStripRef.current;
-    if (strip) strip.scrollLeft = strip.scrollWidth;
+    if (strip) strip.scrollTo({ left: strip.scrollWidth, behavior: "smooth" });
   }, [variantCount]);
 
   // One-shot border-sweep + brightness pop when a frame finishes generating.
@@ -151,6 +151,17 @@ export function FrameCard({ frame, index, total }: Props) {
   // Library images not already attached to this frame (the "+ from library" pool).
   const library = project?.library ?? [];
   const unattachedRefs = library.filter((a) => !frame.refHashes.includes(a.hash));
+
+  // Whether this frame actually feeds identity/style references (its own refs, the
+  // project style anchors, or an active cast member with refs). Drives the visibility
+  // of the composition-mode control — it's inert otherwise.
+  const styleRefCount = project ? styleReferences(project.style).length : 0;
+  const activeCastHasRefs = cast.some((c) => inFrame(c.id) && c.refHashes.length > 0);
+  const hasIdentityRefs = frame.refHashes.length > 0 || styleRefCount > 0 || activeCastHasRefs;
+  // When a continuation is active its own mode governs composition, so the
+  // reference-mode control would be redundant — mirror `composeFramePrompt`'s branch.
+  const continuityActive = !!frame.continuesFrameId && !!continuesThumb;
+  const referenceMode = frame.referenceMode ?? "compose";
 
   // Drag an image file onto the preview to set it as this frame's output.
   const [dragOver, setDragOver] = useState(false);
@@ -459,6 +470,35 @@ export function FrameCard({ frame, index, total }: Props) {
                 <img src={api.thumbUrl(a.hash)} alt={a.label || "library image"} className="h-full w-full object-cover" />
               </button>
             ))}
+          </div>
+        )}
+
+        {/* Composition control: how the frame's identity/style references are used.
+            Default "New" keeps look consistent while the prompt owns the camera &
+            layout; "Match ref" reproduces the reference's composition. Hidden when a
+            continuation governs composition, or no references are fed. */}
+        {hasIdentityRefs && !continuityActive && (
+          <div className="flex flex-col gap-1 pt-0.5">
+            <div className="flex items-center justify-between">
+              <span className="text-[10px] font-medium uppercase tracking-wide text-faint">
+                composition
+              </span>
+              <Segmented
+                size="sm"
+                aria-label="How references steer this frame"
+                value={referenceMode}
+                onChange={(m) => patchFrame(frame.id, { referenceMode: m })}
+                options={[
+                  { value: "compose", label: "New" },
+                  { value: "match", label: "Match ref" },
+                ]}
+              />
+            </div>
+            <p className="text-[10px] leading-relaxed text-faint">
+              {referenceMode === "compose"
+                ? "References lock character & style — your prompt drives the camera & layout."
+                : "Reproduces the reference's composition & camera; the prompt only adds changes."}
+            </p>
           </div>
         )}
       </div>

@@ -435,15 +435,30 @@ blocking; `"shot"` = preserve the exact composition/camera and edit in place. Th
 when a continuity reference actually resolves (same gate as the compiler), so preview, compile and run stay
 identical and a dangling/self/imageless link emits nothing. Self-links, unknown ids and
 not-yet-generated sources resolve to nothing, so reordering/deleting frames never breaks a run (the store
-also clears links pointing at a removed frame). A fourth lever is **per-frame reference images**
+also clears links pointing at a removed frame).
+
+**Reference intent (composition vs identity).** The decisive lever for "consistent look, but *my*
+composition": because a fal edit endpoint treats any supplied image as a canvas to reproduce, a bare
+character/style reference silently **pins the composition** so the prompt can't move the camera or restage
+the shot (the root cause of "it keeps generating the same image"). So a frame's identity/style references
+carry an intent — `frame.referenceMode` (`ReferenceMode`, default **`"compose"`**, `DEFAULT_REFERENCE_MODE`)
+— that `composeFramePrompt` lowers into a trailing **reference directive** (`referenceDirective`):
+`"compose"` (the industry-standard default — character LoRA / IP-Adapter / `--cref` semantics) tells the
+model to use the refs for **identity, wardrobe, palette and art style only** and build a new composition
+from the prompt; `"match"` reproduces the reference's composition/camera (copy a layout). Exactly **one**
+composition directive is emitted per frame: a resolved continuity link wins (its `continuesMode` governs),
+else the reference directive fires when `identityReferences` is non-empty — so preview/compile/run stay
+identical and a frame never carries two conflicting directives. The UI exposes it as a per-frame
+**Composition: New / Match ref** toggle, shown only when the frame actually feeds identity refs and isn't a
+continuation. A fourth lever is **per-frame reference images**
 (`frame.refHashes[]`, `frameOwnReferences`): images attached to **one frame only** — composition/look
 guidance for that single panel, independent of the project-wide style anchors and the shared cast. Drawn
 from the same reusable library (upload or attach an existing entry), full weight, fed only when that frame
 generates; removing a library entry detaches them too. Per
 frame, `frameReferences` (`packages/shared/src/comic.ts`) resolves the ordered, deduped, **weighted** set
-— the continuity reference first (full weight, so it dominates), then **the frame's own refs**, then style
-references (each with its weight), then each active cast member's refs at full weight (first
-occurrence wins on dedup, so a shared image keeps its strongest/earliest weight) — gated by `frame.characterIds`
+— the continuity reference first (full weight, so it dominates), then the **identity/style** set
+(`identityReferences`: the frame's own refs, then style anchors, then each active cast member's refs at full
+weight; first occurrence wins on dedup, so a shared image keeps its strongest/earliest weight) — gated by `frame.characterIds`
 (tri-state: `undefined` = whole cast, `[]` = none, `[ids]` = subset; unknown ids ignored so deleting a
 character never breaks a frame). That set flows as `references` (`[{hash, weight}]`) →
 `NormalizedInput.references` (`packages/nodes/src/image.ts`). **Back-compat:** the legacy single

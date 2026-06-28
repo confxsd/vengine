@@ -14,6 +14,8 @@ import {
   frameReferenceHashes,
   frameReferences,
   continuityDirective,
+  referenceDirective,
+  identityReferences,
   styleReferences,
   MAX_VARIANTS,
   DEFAULT_NEGATIVE,
@@ -82,7 +84,11 @@ describe("composeFramePrompt", () => {
     const out = composeFramePrompt(p, p.frames[1]!);
     expect(out).toContain("the crowd scatters"); // the frame's own description still leads
     expect(out).toContain(continuityDirective("restage"));
-    expect(out).toMatch(/RE-STAGE/);
+    expect(out).toMatch(/new composition/i);
+    // Restage must forbid the "repaint the existing figure" failure so a newly named
+    // character is added as its own figure, not swapped in place of the prior one.
+    expect(continuityDirective("restage").toLowerCase()).toContain("do not simply repaint");
+    expect(continuityDirective("shot")).not.toMatch(/new composition/i);
   });
 
   it("uses the same-shot directive when the frame's mode is 'shot'", () => {
@@ -95,7 +101,7 @@ describe("composeFramePrompt", () => {
     });
     const out = composeFramePrompt(p, p.frames[1]!);
     expect(out).toContain(continuityDirective("shot"));
-    expect(out).not.toMatch(/RE-STAGE/);
+    expect(out).not.toMatch(/new composition/i);
   });
 
   it("emits no continuity directive when the link resolves to no image", () => {
@@ -393,6 +399,66 @@ describe("compileComic", () => {
     // 768×1344 is the SDXL/fal-friendly ~1MP portrait bucket nearest exact 9:16.
     expect(DEFAULT_WIDTH / DEFAULT_HEIGHT).toBeCloseTo(9 / 16, 1);
     expect(DEFAULT_HEIGHT).toBeGreaterThan(DEFAULT_WIDTH);
+  });
+});
+
+describe("reference mode (composition vs identity)", () => {
+  const anchor = "a".repeat(64);
+
+  it("appends the 'compose' directive by default when identity refs are fed", () => {
+    const p = project({ style: { ...project().style, anchors: [{ hash: anchor, weight: 1 }] } });
+    const out = composeFramePrompt(p, p.frames[0]!);
+    expect(out).toContain(referenceDirective("compose"));
+    // The default directive must forbid copying the reference's composition/camera.
+    expect(referenceDirective("compose").toLowerCase()).toContain("do not copy");
+    expect(out).toContain("a lone figure under a flickering streetlight"); // frame prompt still leads
+  });
+
+  it("switches to the 'match' directive when the frame opts in", () => {
+    const p = project({
+      style: { ...project().style, anchors: [{ hash: anchor, weight: 1 }] },
+      frames: [{ id: "a", prompt: "x", referenceMode: "match" }],
+    });
+    const out = composeFramePrompt(p, p.frames[0]!);
+    expect(out).toContain(referenceDirective("match"));
+    expect(out).not.toContain(referenceDirective("compose"));
+    expect(referenceDirective("match")).not.toBe(referenceDirective("compose"));
+  });
+
+  it("emits NO reference directive when the frame feeds no identity references", () => {
+    const p = project(); // no anchors, no cast, no per-frame refs
+    const out = composeFramePrompt(p, p.frames[0]!);
+    expect(out).not.toContain(referenceDirective("compose"));
+    expect(out).not.toContain(referenceDirective("match"));
+  });
+
+  it("continuity governs composition: its directive wins, the reference one is suppressed", () => {
+    const img = "f".repeat(64);
+    const p = project({
+      style: { ...project().style, anchors: [{ hash: anchor, weight: 1 }] },
+      frames: [
+        { id: "a", prompt: "establishing", resultHash: img, variants: [{ hash: img, seed: 1 }] },
+        { id: "b", prompt: "the action moves on", continuesFrameId: "a" },
+      ],
+    });
+    const out = composeFramePrompt(p, p.frames[1]!);
+    expect(out).toContain(continuityDirective("restage")); // continuity default
+    expect(out).not.toContain(referenceDirective("compose")); // never two directives
+  });
+
+  it("identityReferences excludes continuity but keeps own refs → style → cast", () => {
+    const own = "b".repeat(64);
+    const hero = "c".repeat(64);
+    const p = project({
+      style: { ...project().style, anchors: [{ hash: anchor, weight: 0.5 }] },
+      cast: [{ id: "hero", name: "Hero", refHashes: [hero] }],
+      frames: [{ id: "a", prompt: "x", refHashes: [own] }],
+    });
+    expect(identityReferences(p, p.frames[0]!)).toEqual([
+      { hash: own, weight: 1 },
+      { hash: anchor, weight: 0.5 },
+      { hash: hero, weight: 1 },
+    ]);
   });
 });
 
