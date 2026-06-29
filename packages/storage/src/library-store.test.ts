@@ -16,6 +16,8 @@ afterEach(async () => {
 });
 
 const HASH_A = "a".repeat(64);
+const HASH_B = "b".repeat(64);
+const HASH_C = "c".repeat(64);
 
 describe("LibraryStore", () => {
   it("reads an empty library before anything is written", async () => {
@@ -42,6 +44,22 @@ describe("LibraryStore", () => {
     const lib = await store.get();
     expect(lib.characters).toHaveLength(1); // updated, not duplicated
     expect(lib.characters[0]!.name).toBe("Yue (moon rabbit)");
+  });
+
+  it("appendCharacterRefs unions new hashes and de-dups, concurrently", async () => {
+    await store.upsertCharacter({ id: "yue", name: "Yue", refHashes: [HASH_A] } as never);
+    // Two concurrent imports + one overlapping hash: all distinct refs must survive.
+    await Promise.all([
+      store.appendCharacterRefs("yue", [HASH_B, HASH_A]), // HASH_A already present
+      store.appendCharacterRefs("yue", [HASH_C]),
+    ]);
+    const refs = (await store.get()).characters[0]!.refHashes;
+    expect(refs[0]).toBe(HASH_A); // existing ref stays first
+    expect([...refs].sort()).toEqual([HASH_A, HASH_B, HASH_C]); // both imports landed, no dup
+  });
+
+  it("appendCharacterRefs is a no-op for a missing character", async () => {
+    expect(await store.appendCharacterRefs("ghost", [HASH_A])).toBeUndefined();
   });
 
   it("persists across store instances (same root)", async () => {

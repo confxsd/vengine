@@ -113,6 +113,29 @@ export class LibraryStore {
     return result;
   }
 
+  /**
+   * Append reference hashes to a character *under the lock*, de-duplicating against the
+   * current set (re-reads inside the mutex, so two concurrent imports both land instead
+   * of one clobbering the other). No-op (returns undefined) if the character is gone.
+   */
+  async appendCharacterRefs(id: string, hashes: string[]): Promise<LibraryCharacter | undefined> {
+    let result: LibraryCharacter | undefined;
+    await this.update((lib) => {
+      const i = lib.characters.findIndex((c) => c.id === id);
+      if (i < 0) return lib;
+      const cur = lib.characters[i]!;
+      const seen = new Set(cur.refHashes);
+      const refHashes = [...cur.refHashes];
+      for (const h of hashes) if (!seen.has(h)) {
+        seen.add(h);
+        refHashes.push(h);
+      }
+      result = { ...cur, refHashes, updatedAt: new Date().toISOString() };
+      return { ...lib, characters: lib.characters.map((c, j) => (j === i ? result! : c)) };
+    });
+    return result;
+  }
+
   async removeCharacter(id: string): Promise<void> {
     await this.update((lib) => ({ ...lib, characters: lib.characters.filter((c) => c.id !== id) }));
   }

@@ -24,6 +24,8 @@ import type {
   RunPlan,
   RunResult,
   SnapshotEntry,
+  SheetBox,
+  SheetSegmentResult,
 } from "./types";
 
 async function json<T>(res: Response): Promise<T> {
@@ -127,6 +129,17 @@ export const api = {
   startTraining: (req: StartTrainingRequest) => post<TrainedLora>("/api/training", req),
   removeLora: (id: string) =>
     fetch(`/api/library/loras/${id}`, { method: "DELETE" }).then((r) => r.ok),
+
+  // ── Character-sheet ingestion ─────────────────────────────────────────────────
+  /** Propose crop regions (with previews) from an uploaded sheet asset. */
+  segmentSheet: (hash: string) => post<SheetSegmentResult>("/api/library/sheet/segment", { hash }),
+  /** Crop the chosen regions, bank them, and append them to a character's references. */
+  extractSheetRefs: (hash: string, characterId: string, boxes: SheetBox[]) =>
+    post<{ character: LibraryCharacter; added: string[] }>("/api/library/sheet/extract", {
+      hash,
+      characterId,
+      boxes,
+    }),
 };
 
 /**

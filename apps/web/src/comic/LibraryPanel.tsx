@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import {
   CheckCircle2,
+  ImageDown,
   Loader2,
   Plus,
   Sparkles,
@@ -17,6 +18,7 @@ import { api } from "../api";
 import { Badge, Button, Input, Segmented, Textarea } from "../components/ui";
 import type { LibraryCharacter, TrainedLora } from "../types";
 import { TrainModal } from "./TrainModal";
+import { SheetImportModal } from "./SheetImportModal";
 import { cn } from "@/lib/cn";
 
 type Tab = "characters" | "styles" | "models";
@@ -171,6 +173,7 @@ function CharactersTab() {
   const createCharacter = useLibrary((s) => s.createCharacter);
   const [name, setName] = useState("");
   const [training, setTraining] = useState<LibraryCharacter | null>(null);
+  const [importing, setImporting] = useState<LibraryCharacter | null>(null);
 
   const add = async () => {
     if (!name.trim()) return;
@@ -200,15 +203,31 @@ function CharactersTab() {
       )}
 
       {characters.map((c) => (
-        <CharacterRow key={c.id} character={c} onTrain={() => setTraining(c)} />
+        <CharacterRow
+          key={c.id}
+          character={c}
+          onTrain={() => setTraining(c)}
+          onImportSheet={() => setImporting(c)}
+        />
       ))}
 
       {training && <TrainModal character={training} onClose={() => setTraining(null)} />}
+      {importing && (
+        <SheetImportModal character={importing} onClose={() => setImporting(null)} />
+      )}
     </div>
   );
 }
 
-function CharacterRow({ character, onTrain }: { character: LibraryCharacter; onTrain: () => void }) {
+function CharacterRow({
+  character,
+  onTrain,
+  onImportSheet,
+}: {
+  character: LibraryCharacter;
+  onTrain: () => void;
+  onImportSheet: () => void;
+}) {
   const patchCharacter = useLibrary((s) => s.patchCharacter);
   const deleteCharacter = useLibrary((s) => s.deleteCharacter);
   const addCharacterRef = useLibrary((s) => s.addCharacterRef);
@@ -258,6 +277,13 @@ function CharacterRow({ character, onTrain }: { character: LibraryCharacter; onT
           title="Add reference images"
         >
           {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
+        </button>
+        <button
+          onClick={onImportSheet}
+          className="flex h-11 w-11 items-center justify-center rounded-md border border-dashed border-border text-faint hover:border-accent/60 hover:text-muted"
+          title="Import from a character sheet (auto-split into pose refs)"
+        >
+          <ImageDown className="h-4 w-4" />
         </button>
         <input
           ref={fileRef}

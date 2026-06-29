@@ -52,6 +52,29 @@ export interface StartTrainingRequest {
   characterId?: string;
 }
 
+/** A crop rectangle in full-resolution sheet pixels (mirrors providers' `Box`). */
+export interface SheetBox {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+/** One proposed crop from a character sheet: its box, a heuristic "looks like a pose"
+ *  hint (pre-selected in the review grid), and an inline preview for that grid. */
+export interface SheetRegion {
+  box: SheetBox;
+  suggested: boolean;
+  preview: string;
+}
+
+/** Response of POST /api/library/sheet/segment. */
+export interface SheetSegmentResult {
+  width: number;
+  height: number;
+  regions: SheetRegion[];
+}
+
 /** Mirrors @vengine/storage ProjectStore.ProjectSummary (server-only package). */
 export interface ProjectSummary {
   id: string;

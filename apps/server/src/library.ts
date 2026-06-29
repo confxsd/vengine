@@ -5,9 +5,24 @@ import {
   LoraKind,
   type TrainingProgressEvent,
 } from "@vengine/shared";
+import { analyzeSheet, cropRegion, cropPreview } from "@vengine/providers";
 import { z } from "zod";
 import type { Runtime } from "./runtime.js";
 import { TrainingService } from "./training.js";
+
+/** A crop rectangle in full-resolution sheet pixels (mirrors providers' `Box`). */
+const SheetBoxSchema = z.object({
+  x: z.number().int().nonnegative(),
+  y: z.number().int().nonnegative(),
+  w: z.number().int().positive(),
+  h: z.number().int().positive(),
+});
+const SegmentBody = z.object({ hash: z.string().length(64) });
+const ExtractBody = z.object({
+  hash: z.string().length(64),
+  characterId: z.string().min(1),
+  boxes: z.array(SheetBoxSchema).min(1).max(48),
+});
 
 /** Request to start a training job. The dataset is referenced by asset hash, so the
  *  client never re-uploads images already in the store (e.g. a character's refs). */
@@ -68,6 +83,57 @@ export function registerLibraryRoutes(
   app.delete("/api/library/characters/:id", async (c) => {
     await rt.library.removeCharacter(c.req.param("id"));
     return c.json({ ok: true });
+  });
+
+  // --- Character-sheet ingestion -----------------------------------------
+  // Split one combined reference sheet into clean per-pose identity refs. Two phases so
+  // the human reviews before anything is stored: (1) `segment` proposes crop regions
+  // with inline previews; (2) `extract` crops the boxes the user kept, banks them in the
+  // asset store, and appends them to the character's references.
+  app.post("/api/library/sheet/segment", async (c) => {
+    const parsed = SegmentBody.safeParse(await c.req.json().catch(() => ({})));
+    if (!parsed.success) return c.json({ error: parsed.error.message }, 400);
+    let bytes: Uint8Array;
+    try {
+      bytes = new Uint8Array(await rt.assets.get(parsed.data.hash));
+    } catch {
+      return c.json({ error: "sheet asset not found" }, 404);
+    }
+    const { width, height, regions } = await analyzeSheet(bytes);
+    const out = await Promise.all(
+      regions.map(async (r) => ({
+        box: r.box,
+        suggested: r.suggested,
+        preview: await cropPreview(bytes, r.box),
+      })),
+    );
+    return c.json({ width, height, regions: out });
+  });
+
+  app.post("/api/library/sheet/extract", async (c) => {
+    const parsed = ExtractBody.safeParse(await c.req.json().catch(() => ({})));
+    if (!parsed.success) return c.json({ error: parsed.error.message }, 400);
+    const { hash, characterId, boxes } = parsed.data;
+    let bytes: Uint8Array;
+    try {
+      bytes = new Uint8Array(await rt.assets.get(hash));
+    } catch {
+      return c.json({ error: "sheet asset not found" }, 404);
+    }
+    const added: string[] = [];
+    for (const box of boxes) {
+      try {
+        const crop = await cropRegion(bytes, box);
+        const ref = await rt.assets.put(crop, "image/jpeg");
+        added.push(ref.hash);
+      } catch {
+        /* a box outside the image (stale client state) — skip it */
+      }
+    }
+    if (added.length === 0) return c.json({ error: "no valid crops produced" }, 400);
+    const character = await rt.library.appendCharacterRefs(characterId, added);
+    if (!character) return c.json({ error: "character not found" }, 404);
+    return c.json({ character, added });
   });
 
   // --- Style packs --------------------------------------------------------

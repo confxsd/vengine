@@ -8,6 +8,7 @@ import type {
   TrainedLora,
   TrainerInfo,
   StartTrainingRequest,
+  SheetBox,
 } from "./types";
 
 const EMPTY: Library = { characters: [], styles: [], trainedLoras: [] };
@@ -39,6 +40,9 @@ interface LibraryState {
   patchCharacter: (id: string, patch: Partial<LibraryCharacter>) => Promise<void>;
   deleteCharacter: (id: string) => Promise<void>;
   addCharacterRef: (id: string, file: File) => Promise<void>;
+
+  /** Crop the chosen sheet regions into refs and merge the updated character back. */
+  extractSheetRefs: (hash: string, characterId: string, boxes: SheetBox[]) => Promise<number>;
 
   createStyle: (name: string) => Promise<void>;
   patchStylePack: (id: string, patch: Partial<StylePack>) => Promise<void>;
@@ -209,6 +213,19 @@ export const useLibrary = create<LibraryState>((set, get) => {
       await commitCharacter(id, (c) =>
         c.refHashes.includes(ref!.hash) ? c : { ...c, refHashes: [...c.refHashes, ref!.hash] },
       );
+    },
+
+    extractSheetRefs: async (hash, characterId, boxes) => {
+      // The server crops, banks, and appends atomically, returning the updated record;
+      // adopt it directly (no full refetch) so the new refs appear without a flash.
+      const { character, added } = await api.extractSheetRefs(hash, characterId, boxes);
+      set((s) => ({
+        library: {
+          ...s.library,
+          characters: s.library.characters.map((c) => (c.id === character.id ? character : c)),
+        },
+      }));
+      return added.length;
     },
 
     createStyle: async (name) => {
