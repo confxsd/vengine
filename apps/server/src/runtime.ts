@@ -2,11 +2,13 @@ import { Executor, type ExecutionServices, type NodeRegistry } from "@vengine/co
 import {
   ProviderRegistry,
   TextProviderRegistry,
+  TrainingRegistry,
   mockModel,
   falModels,
+  falTrainers,
   kimiModels,
 } from "@vengine/providers";
-import { AssetStore, ProjectStore, FileOutputCache } from "@vengine/storage";
+import { AssetStore, ProjectStore, LibraryStore, FileOutputCache } from "@vengine/storage";
 import { createNodeRegistry } from "@vengine/nodes";
 
 /**
@@ -18,9 +20,13 @@ export interface Runtime {
   providers: ProviderRegistry;
   /** Text/LLM adapters (prompt assist, intelligence features). */
   textProviders: TextProviderRegistry;
+  /** LoRA training adapters (character/style fine-tunes). */
+  trainers: TrainingRegistry;
   registry: NodeRegistry;
   assets: AssetStore;
   projects: ProjectStore;
+  /** Cross-project library: recurring characters, style packs, trained LoRAs. */
+  library: LibraryStore;
   executor: Executor;
   services: ExecutionServices;
 }
@@ -33,9 +39,13 @@ export function createRuntime(): Runtime {
   // Text models power AI text assist (KIMI_KEY); empty key just disables the feature.
   const textProviders = new TextProviderRegistry().registerAll(Object.values(kimiModels));
 
+  // LoRA trainers (FAL_KEY); empty key just disables training.
+  const trainers = new TrainingRegistry().registerAll(Object.values(falTrainers));
+
   const registry = createNodeRegistry({ providers });
   const assets = new AssetStore();
   const projects = new ProjectStore();
+  const library = new LibraryStore();
   // Persistent cache: unchanged frames stay free across server restarts so an
   // iterative workflow never re-bills a paid model for an image it already made.
   const executor = new Executor({ registry, cache: new FileOutputCache(), concurrency: 4 });
@@ -45,7 +55,7 @@ export function createRuntime(): Runtime {
     getApiKey: (provider) => process.env[`${provider.toUpperCase()}_KEY`],
   };
 
-  return { providers, textProviders, registry, assets, projects, executor, services };
+  return { providers, textProviders, trainers, registry, assets, projects, library, executor, services };
 }
 
 /** Structural node manifest for the client palette/inspector (no executor logic). */

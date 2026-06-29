@@ -5,10 +5,16 @@ import { Hono, type Context } from "hono";
 import { cors } from "hono/cors";
 import type { WSContext } from "hono/ws";
 import { z } from "zod";
-import { GraphDocumentSchema, type NodeProgressEvent } from "@vengine/shared";
+import {
+  GraphDocumentSchema,
+  builtinStylePacks,
+  type NodeProgressEvent,
+  type TrainingProgressEvent,
+} from "@vengine/shared";
 import { createRuntime, modelManifest, nodeManifest } from "./runtime.js";
 import { registerComicRoutes } from "./comics.js";
 import { registerAssistRoutes } from "./assist.js";
+import { registerLibraryRoutes } from "./library.js";
 
 // Load secrets from a .env file (server cwd, then up to the repo root) into
 // process.env before anything reads a key. Real env vars always take precedence.
@@ -30,7 +36,7 @@ app.use("/api/*", cors());
 const { injectWebSocket, upgradeWebSocket } = createNodeWebSocket({ app });
 const clients = new Set<WSContext>();
 
-function broadcast(event: NodeProgressEvent & { kind?: string }): void {
+function broadcast(event: (NodeProgressEvent & { kind?: string }) | TrainingProgressEvent): void {
   const msg = JSON.stringify(event);
   for (const ws of clients) {
     try {
@@ -57,6 +63,17 @@ registerComicRoutes(app, rt, broadcast);
 
 // AI text assist: optimize/enrich/fix prompts and prose fields.
 registerAssistRoutes(app, rt);
+
+// Cross-project Library (characters, style packs) + durable LoRA training.
+const training = registerLibraryRoutes(app, rt, broadcast);
+// Seed the built-in style packs (Comic / Oil / Ink / Watercolor) on first run —
+// the decoupling from "comics only". Existing/edited packs are left untouched.
+rt.library
+  .ensureStyles(builtinStylePacks())
+  .catch((err) => console.error("style-pack seed failed:", err));
+// Re-attach poll loops to any job left mid-train by a previous process, so a
+// server restart never orphans a (still-running, already-paid) fal training job.
+training.resume().catch((err) => console.error("training resume failed:", err));
 
 const RunBody = z.object({
   graph: GraphDocumentSchema,

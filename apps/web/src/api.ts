@@ -5,7 +5,14 @@ import type {
   AssistResponse,
   ComicProject,
   GraphDocument,
+  Library,
+  LibraryCharacter,
+  StylePack,
+  TrainedLora,
+  TrainingProgressEvent,
 } from "@vengine/shared";
+import { isTrainingEvent } from "@vengine/shared";
+import type { TrainerInfo, StartTrainingRequest } from "./types";
 import type {
   ComicEditResult,
   ComicRunResult,
@@ -97,18 +104,104 @@ export const api = {
   // ── AI text assist ──────────────────────────────────────────────────────────
   assistConfig: () => fetch("/api/assist/config").then(json<AssistConfig>),
   assist: (req: AssistRequest) => post<AssistResponse>("/api/assist", req),
+
+  // ── Cross-project Library ─────────────────────────────────────────────────────
+  library: () => fetch("/api/library").then(json<Library>),
+  trainers: () => fetch("/api/trainers").then(json<TrainerInfo[]>),
+  upsertCharacter: (c: LibraryCharacter) =>
+    fetch("/api/library/characters", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(c),
+    }).then(json<LibraryCharacter>),
+  removeCharacter: (id: string) =>
+    fetch(`/api/library/characters/${id}`, { method: "DELETE" }).then((r) => r.ok),
+  upsertStyle: (s: StylePack) =>
+    fetch("/api/library/styles", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(s),
+    }).then(json<StylePack>),
+  removeStyle: (id: string) =>
+    fetch(`/api/library/styles/${id}`, { method: "DELETE" }).then((r) => r.ok),
+  startTraining: (req: StartTrainingRequest) => post<TrainedLora>("/api/training", req),
+  removeLora: (id: string) =>
+    fetch(`/api/library/loras/${id}`, { method: "DELETE" }).then((r) => r.ok),
 };
 
-/** Subscribe to live run progress over WebSocket. Returns an unsubscribe fn. */
-export function connectProgress(onEvent: (e: NodeProgressEvent) => void): () => void {
+/**
+ * A **self-healing** WebSocket to `/ws`. Long-lived work (a multi-minute training, a
+ * generation run) outlives transient drops (sleep, network change, server restart),
+ * so the socket reconnects with capped exponential backoff. `onMessage` receives each
+ * parsed frame; `onReopen(first)` fires on every successful open with `first=true`
+ * only on the very first connect, so callers can resync (refetch truth) after a drop
+ * without resyncing on startup. Returns an unsubscribe that stops the socket and any
+ * pending reconnect. Errors before the first open still reconnect (so init order /
+ * a cold server can't leave the client permanently socket-less).
+ */
+function reconnectingWs(opts: {
+  onMessage: (data: unknown) => void;
+  onReopen?: (first: boolean) => void;
+}): () => void {
   const proto = location.protocol === "https:" ? "wss" : "ws";
-  const ws = new WebSocket(`${proto}://${location.host}/ws`);
-  ws.onmessage = (msg) => {
-    try {
-      onEvent(JSON.parse(msg.data) as NodeProgressEvent);
-    } catch {
-      /* ignore malformed frames */
-    }
+  let ws: WebSocket | null = null;
+  let closed = false;
+  let first = true;
+  let backoff = 500;
+  let retry: ReturnType<typeof setTimeout> | undefined;
+
+  const connect = () => {
+    ws = new WebSocket(`${proto}://${location.host}/ws`);
+    ws.onopen = () => {
+      opts.onReopen?.(first);
+      first = false;
+      backoff = 500;
+    };
+    ws.onmessage = (msg) => {
+      try {
+        opts.onMessage(JSON.parse(msg.data));
+      } catch {
+        /* ignore malformed frames */
+      }
+    };
+    ws.onclose = () => {
+      if (closed) return;
+      retry = setTimeout(connect, backoff);
+      backoff = Math.min(backoff * 2, 10_000); // cap the backoff
+    };
+    ws.onerror = () => ws?.close();
   };
-  return () => ws.close();
+  connect();
+
+  return () => {
+    closed = true;
+    if (retry) clearTimeout(retry);
+    ws?.close();
+  };
+}
+
+/** Subscribe to live run progress over a self-healing WebSocket. Returns unsubscribe.
+ *  Run results are HTTP-authoritative, so no resync-on-reconnect is needed — but the
+ *  socket must reconnect or live frame previews freeze for the session after any drop. */
+export function connectProgress(onEvent: (e: NodeProgressEvent) => void): () => void {
+  return reconnectingWs({ onMessage: (e) => onEvent(e as NodeProgressEvent) });
+}
+
+/**
+ * Subscribe to **training** progress. WS events are live hints; the persisted library
+ * is the source of truth, so on every *re*connect we fire `onReconnect` to refetch it
+ * (catching any transition missed while disconnected).
+ */
+export function connectLibrary(handlers: {
+  onTraining: (lora: TrainingProgressEvent["lora"]) => void;
+  onReconnect?: () => void;
+}): () => void {
+  return reconnectingWs({
+    onMessage: (e) => {
+      if (isTrainingEvent(e)) handlers.onTraining(e.lora);
+    },
+    onReopen: (first) => {
+      if (!first) handlers.onReconnect?.();
+    },
+  });
 }

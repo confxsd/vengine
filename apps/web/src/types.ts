@@ -5,6 +5,10 @@ import type {
   ComicReference,
   ComicStyle,
   ComicVariant,
+  Library,
+  LibraryCharacter,
+  StylePack,
+  TrainedLora,
   NodeProgressEvent,
   NodeRunStatus,
 } from "@vengine/shared";
@@ -18,7 +22,35 @@ export type {
   ComicReference,
   ComicStyle,
   ComicVariant,
+  Library,
+  LibraryCharacter,
+  StylePack,
+  TrainedLora,
 };
+
+/** Trainer manifest entry (mirrors the server's `trainerManifest`). */
+export interface TrainerInfo {
+  id: string;
+  displayName: string;
+  baseModelId: string;
+  trains: "subject" | "style" | "both";
+  /** USD per training step — drives the cost estimate (single source of truth). */
+  pricePerStep: number;
+}
+
+/** Body for `POST /api/training` (mirrors the server's `TrainBody`). */
+export interface StartTrainingRequest {
+  trainerId: string;
+  name: string;
+  kind: "subject" | "style";
+  refHashes: string[];
+  captions?: string[];
+  triggerWord?: string;
+  defaultCaption?: string;
+  isStyle?: boolean;
+  steps?: number;
+  characterId?: string;
+}
 
 /** Mirrors @vengine/storage ProjectStore.ProjectSummary (server-only package). */
 export interface ProjectSummary {
@@ -46,6 +78,10 @@ export interface ComicRunResult {
   runId: string;
   status: "pending" | "running" | "done" | "error" | "cancelled";
   error?: string;
+  /** Frames that actually re-rendered this run (cache miss). */
+  generated: number;
+  /** Frames returned unchanged from cache (identical inputs → same image). */
+  cached: number;
   frames: FrameOutputDelta[];
 }
 

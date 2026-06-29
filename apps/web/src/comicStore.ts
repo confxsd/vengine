@@ -96,6 +96,15 @@ interface ComicState {
 
   // Cast / character consistency
   addCharacter: () => void;
+  /** Add a reusable Library character to this comic's cast (idempotent by id). */
+  addCastFromLibrary: (char: {
+    id: string;
+    name: string;
+    refHashes: string[];
+    loraPath?: string;
+    loraScale?: number;
+    loraName?: string;
+  }) => void;
   removeCharacter: (id: string) => void;
   patchCharacter: (id: string, patch: Partial<ComicCharacter>) => void;
   uploadCharacterRef: (charId: string, file: File) => Promise<void>;
@@ -139,6 +148,10 @@ interface ComicState {
 }
 
 let initialized = false;
+/** The live progress socket's unsubscribe, kept at module scope so a hot-module swap
+ *  can close it — the socket now self-heals, so without this each dev reload would
+ *  leak an ever-reconnecting connection. */
+let progressUnsub: (() => void) | undefined;
 let debounceTimer: ReturnType<typeof setTimeout> | undefined;
 /** Serial save tail: every save waits for the previous one, so PUTs never race. */
 let saveTail: Promise<void> = Promise.resolve();
@@ -263,7 +276,17 @@ export const useComic = create<ComicState>((set, get) => {
         });
       }
       if (result.status === "done") {
-        set({ status: `done ✓ · ${ids.length} frame(s)` });
+        // A run whose frames were all cache hits produces no visible change (identical
+        // inputs → the same image). Say so plainly and point to the reroll, otherwise a
+        // primary action looks broken ("I clicked Run and nothing happened").
+        if (result.generated === 0 && result.cached > 0) {
+          set({ status: "already up to date — reroll 🎲 for a new take" });
+          toast("Already up to date", {
+            description: "Same prompt, seed & references — reroll the seed (🎲) for a new take.",
+          });
+        } else {
+          set({ status: `done ✓ · ${result.generated} frame(s)` });
+        }
       } else {
         set({ status: `run ${result.status}` });
         if (result.status === "error") toast.error("Run failed", { description: result.error });
@@ -412,7 +435,8 @@ export const useComic = create<ComicState>((set, get) => {
         return;
       }
       // Single WS subscription for the app lifetime (re-entry is blocked above).
-      connectProgress(applyProgress);
+      progressUnsub?.();
+      progressUnsub = connectProgress(applyProgress);
       // Probe AI assist availability (non-fatal: button just stays hidden if off).
       api
         .assistConfig()
@@ -596,6 +620,25 @@ export const useComic = create<ComicState>((set, get) => {
 
     addCharacter: () =>
       mutate((p) => ({ ...p, cast: [...p.cast, { id: newCharId(), name: "", refHashes: [] }] })),
+
+    // Link a Library character into the cast. Keyed by the library id so re-adding
+    // refreshes its LoRA/refs in place (e.g. after training completes) without
+    // duplicating, and the frame membership (tri-state) keeps working.
+    addCastFromLibrary: (char) =>
+      mutate((p) => {
+        const entry = {
+          id: char.id,
+          name: char.name,
+          refHashes: char.refHashes,
+          libraryId: char.id,
+          ...(char.loraPath
+            ? { loraPath: char.loraPath, loraScale: char.loraScale ?? 1, loraName: char.loraName ?? char.name }
+            : {}),
+        };
+        return p.cast.some((c) => c.id === char.id)
+          ? { ...p, cast: p.cast.map((c) => (c.id === char.id ? { ...c, ...entry } : c)) }
+          : { ...p, cast: [...p.cast, entry] };
+      }),
 
     // Drop the character and strip its id from any frame's explicit member list
     // (frames keep working regardless — unknown ids are ignored at compile — but
@@ -786,3 +829,8 @@ export const useComic = create<ComicState>((set, get) => {
     },
   };
 });
+
+// Close the self-healing progress socket on a hot-module swap so dev reloads don't
+// leak an ever-reconnecting connection (Vite injects `import.meta.hot` in dev only).
+const hot = (import.meta as { hot?: { dispose: (cb: () => void) => void } }).hot;
+if (hot) hot.dispose(() => progressUnsub?.());

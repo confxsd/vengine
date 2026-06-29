@@ -222,10 +222,24 @@ export function registerComicRoutes(app: Hono, rt: Runtime, broadcast: Broadcast
       at: new Date().toISOString(),
     });
 
+    // Distinguish freshly generated frames from cache hits, so the client can tell the
+    // user when a run was a no-op (identical inputs → same image) and point them to
+    // reroll the seed for a new take instead of looking like nothing happened.
+    const scope = parsed.data.frameIds ?? project.frames.map((f) => f.id);
+    let generated = 0;
+    let cached = 0;
+    for (const fid of scope) {
+      const st = result.nodes.get(genNodeId(fid))?.status;
+      if (st === "done") generated += 1;
+      else if (st === "cached") cached += 1;
+    }
+
     return c.json({
       runId: result.runId,
       status: result.status,
       error: result.error,
+      generated,
+      cached,
       frames: saved.frames.map((f) => ({ id: f.id, resultHash: f.resultHash, variants: f.variants })),
     });
   });

@@ -58,6 +58,18 @@ export const ComicCharacterSchema = z.object({
   name: z.string().default(""),
   /** Identity reference image hashes (most-distinctive first; models weight earlier refs higher). */
   refHashes: z.array(z.string().length(64)).default([]),
+  /**
+   * Trained **character LoRA** for this cast member — the strongest identity lock,
+   * applied (on LoRA-capable models) only to frames where the character appears, so
+   * it composes with the project's fixed style LoRA on the *style* axis. Copied from a
+   * Library character's ready LoRA when added to the comic. Optional (refs-only is the
+   * common case); kept optional so existing cast entries need no migration.
+   */
+  loraPath: z.string().optional(),
+  loraScale: z.number().optional(),
+  loraName: z.string().optional(),
+  /** Origin Library character id, so the cast entry can be re-synced to the library. */
+  libraryId: z.string().optional(),
 });
 export type ComicCharacter = z.infer<typeof ComicCharacterSchema>;
 
@@ -473,9 +485,8 @@ export function compileEditFrame(
   const mode = req.mode ?? DEFAULT_EDIT_MODE;
   const keepStyle = req.keepStyle ?? true;
   const references = editReferences(project, frame, req.baseHash, keepStyle);
-  const loras = style.loras
-    .filter((l) => l.path.trim())
-    .map((l) => ({ path: l.path, scale: l.scale }));
+  // Style LoRAs + the active cast's character LoRAs (same compose as a normal frame).
+  const loras = frameLoras(project, frame).map((l) => ({ path: l.path, scale: l.scale }));
 
   return GraphDocumentSchema.parse({
     version: 1,
@@ -561,6 +572,29 @@ export function frameReferenceHashes(project: ComicProject, frame: ComicFrame): 
   return frameReferences(project, frame).map((ref) => ref.hash);
 }
 
+/**
+ * The LoRAs that apply to one frame: the project's fixed **style** LoRAs (every
+ * frame) plus the **character** LoRA of each cast member active in this frame
+ * (membership via `characterIds`, same tri-state as references). Style LoRAs lead
+ * (the look is the stable base), character LoRAs follow; deduped by path (first
+ * wins). Blank paths are dropped. This is the *style axis × identity axis* compose:
+ * a character keeps her trained identity across whatever style the project wears.
+ */
+export function frameLoras(project: ComicProject, frame: ComicFrame): ComicLora[] {
+  const ids = frame.characterIds;
+  const activeCast =
+    ids === undefined ? project.cast : project.cast.filter((c) => ids.includes(c.id));
+  const characterLoras: ComicLora[] = activeCast
+    .filter((c) => c.loraPath?.trim())
+    .map((c) => ({ path: c.loraPath!, scale: c.loraScale ?? 1, name: c.loraName || c.name }));
+
+  const byPath = new Map<string, ComicLora>();
+  for (const lora of [...project.style.loras, ...characterLoras]) {
+    if (lora.path.trim() && !byPath.has(lora.path)) byPath.set(lora.path, lora);
+  }
+  return [...byPath.values()];
+}
+
 export interface CompileComicOptions {
   /** Directory the export nodes write frame images to (e.g. the project's frames/ dir). */
   exportDir?: string;
@@ -580,10 +614,6 @@ export function compileComic(
 ): GraphDocument {
   const { style } = project;
   const format = opts.format ?? "png";
-  // House-style LoRAs shared by every frame (drop blank-path rows; only path+scale run).
-  const loras = style.loras
-    .filter((l) => l.path.trim())
-    .map((l) => ({ path: l.path, scale: l.scale }));
 
   const nodes: GraphDocument["nodes"] = [];
   const edges: GraphDocument["edges"] = [];
@@ -593,6 +623,8 @@ export function compileComic(
     const eid = exportNodeId(frame.id);
     const x = i * 360;
     const references = frameReferences(project, frame);
+    // Per-frame: style LoRAs + the active cast members' character LoRAs.
+    const loras = frameLoras(project, frame).map((l) => ({ path: l.path, scale: l.scale }));
 
     nodes.push({
       id: gid,

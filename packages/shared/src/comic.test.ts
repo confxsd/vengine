@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { builtinStylePacks } from "./library.js";
 import {
   ComicProjectSchema,
   compileComic,
@@ -521,5 +522,76 @@ describe("in-place edit", () => {
     expect(
       compileEditFrame(p, p.frames[0]!, { baseHash: base, instruction: "x", seed: 123 }).nodes[0]!.params.seed,
     ).toBe(123);
+  });
+});
+
+describe("character LoRA on the cast (identity × style compose)", () => {
+  const styleLora = { path: "https://w/style.safetensors", scale: 0.9, name: "Oil" };
+  const yueLora = { path: "https://w/yue.safetensors", scale: 1, name: "Yue" };
+  const boyLora = { path: "https://w/boy.safetensors", scale: 1, name: "Boy" };
+
+  function castProject(overrides: Record<string, unknown> = {}) {
+    return project({
+      style: { ...project().style, loras: [styleLora] },
+      cast: [
+        { id: "yue", name: "Yue", refHashes: [], loraPath: yueLora.path, loraName: "Yue" },
+        { id: "boy", name: "Boy", refHashes: [], loraPath: boyLora.path, loraName: "Boy" },
+      ],
+      frames: [
+        { id: "a", prompt: "both" }, // whole cast (characterIds undefined)
+        { id: "b", prompt: "just yue", characterIds: ["yue"] },
+        { id: "c", prompt: "no one", characterIds: [] },
+      ],
+      ...overrides,
+    });
+  }
+
+  const lorasOf = (g: ReturnType<typeof compileComic>, id: string) =>
+    (g.nodes.find((n) => n.id === genNodeId(id))!.params.loras as Array<{ path: string }>).map((l) => l.path);
+
+  it("applies a character LoRA only on frames where that character appears", () => {
+    const g = compileComic(castProject());
+    // Frame a: style + both characters; b: style + yue only; c: style only.
+    expect(lorasOf(g, "a")).toEqual([styleLora.path, yueLora.path, boyLora.path]);
+    expect(lorasOf(g, "b")).toEqual([styleLora.path, yueLora.path]);
+    expect(lorasOf(g, "c")).toEqual([styleLora.path]);
+  });
+
+  it("style LoRA leads, character LoRAs follow, deduped by path", () => {
+    // A character that reuses the style LoRA path must not double it.
+    const g = compileComic(
+      castProject({
+        cast: [{ id: "yue", name: "Yue", loraPath: styleLora.path }],
+        frames: [{ id: "a", prompt: "x" }],
+      }),
+    );
+    expect(lorasOf(g, "a")).toEqual([styleLora.path]); // deduped, not [style, style]
+  });
+
+  it("a refs-only character contributes no LoRA", () => {
+    const g = compileComic(
+      castProject({
+        style: { ...project().style, loras: [] },
+        cast: [{ id: "yue", name: "Yue", refHashes: ["a".repeat(64)] }],
+        frames: [{ id: "a", prompt: "x" }],
+      }),
+    );
+    expect(g.nodes.find((n) => n.id === genNodeId("a"))!.params.loras).toBeUndefined();
+  });
+});
+
+describe("built-in style packs (comic decoupling)", () => {
+  it("ship distinct presets, each with its OWN negative", () => {
+    const packs = builtinStylePacks();
+    const ids = packs.map((p) => p.id);
+    expect(new Set(ids).size).toBe(ids.length); // unique ids (safe re-seed)
+    expect(packs.every((p) => p.builtIn)).toBe(true);
+    const comic = packs.find((p) => p.id === "builtin-comic")!;
+    const oil = packs.find((p) => p.id === "builtin-oil")!;
+    // The comic negative bans marks/borders/text; the oil pack must NOT inherit those
+    // (a painterly look shouldn't carry "no panel border / no marks").
+    expect(comic.negative).toMatch(/panel|border|speech bubble/);
+    expect(oil.negative).not.toMatch(/panel|border|speech bubble|watermark/);
+    expect(oil.negative).not.toBe(comic.negative);
   });
 });

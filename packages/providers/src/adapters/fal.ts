@@ -6,6 +6,7 @@ import type {
   PricingModel,
   ProviderCtx,
 } from "../types.js";
+import { falFetch, falSubmitAndPoll } from "./fal-queue.js";
 
 export interface FalModelConfig {
   /** Local adapter id, e.g. "fal/flux-2-pro". */
@@ -30,21 +31,15 @@ export interface FalModelConfig {
   mapInput?: (input: NormalizedInput) => Record<string, unknown>;
   /** Set when `mapInput` forwards `NormalizedInput.loras` (see ModelAdapter.consumesLoras). */
   consumesLoras?: boolean;
+  /**
+   * Cap on merged LoRAs this endpoint accepts (e.g. Qwen merges up to 3). Extras are
+   * dropped with a warning — the symmetric counterpart of `maxReferences`. Since a
+   * frame can stack a style LoRA + several character LoRAs (one per cast member),
+   * an uncapped request would silently 4xx or drop on a limited endpoint.
+   */
+  maxLoras?: number;
 }
 
-const QUEUE_BASE = "https://queue.fal.run";
-const POLL_INTERVAL_MS = 1000;
-const POLL_TIMEOUT_MS = 180_000;
-/**
- * Per-request ceiling for a single fal HTTP call (submit / status poll / result /
- * image download). fal holds its queue connections open and Node's `fetch` has no
- * default timeout, so without this a half-open or stalled socket hangs that one
- * `await` forever — and the `POLL_TIMEOUT_MS` run deadline never fires because it is
- * only checked *between* poll iterations, not during a request. Bounding each request
- * means a stalled connection surfaces as an error (releasing the run) instead of
- * pinning the frame in the generating state indefinitely.
- */
-const REQUEST_TIMEOUT_MS = 60_000;
 /** fal's multi-image edit field; shared by FLUX.2 edit and Gemini/Nano Banana edit. */
 const REFERENCE_FIELD = "image_urls";
 
@@ -111,42 +106,9 @@ function loraMapInput(input: NormalizedInput): Record<string, unknown> {
   return body;
 }
 
-interface FalSubmit {
-  request_id: string;
-  status_url?: string;
-  response_url?: string;
-}
-interface FalStatus {
-  status: "IN_QUEUE" | "IN_PROGRESS" | "COMPLETED";
-}
 interface FalResult {
   images?: Array<{ url: string; width?: number; height?: number; content_type?: string }>;
   seed?: number;
-}
-
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-
-/**
- * Issue a fal request with a per-request timeout merged onto the caller's cancel
- * signal: a single stalled request can never hang forever, yet a user "Cancel run"
- * (which aborts `ctx.signal`) still propagates and stops the fetch. A timeout
- * surfaces as a clear error; a cancel propagates as-is so the run reports cancelled.
- */
-async function falFetch(
-  doFetch: typeof fetch,
-  url: string,
-  init: RequestInit,
-  signal: AbortSignal | undefined,
-): Promise<Response> {
-  const timeout = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
-  const merged = signal ? AbortSignal.any([signal, timeout]) : timeout;
-  try {
-    return await doFetch(url, { ...init, signal: merged });
-  } catch (err) {
-    if (signal?.aborted) throw err; // user cancel — let it propagate unchanged
-    if (timeout.aborted) throw new Error(`fal request timed out after ${REQUEST_TIMEOUT_MS}ms: ${url}`);
-    throw err;
-  }
 }
 
 /**
@@ -181,10 +143,6 @@ export function createFalModel(config: FalModelConfig): ModelAdapter {
         throw new Error(`Missing fal API key for model ${config.id}. Set FAL_KEY in the server env.`);
       }
       const doFetch = ctx.fetch ?? fetch;
-      const headers = {
-        Authorization: `Key ${ctx.apiKey}`,
-        "Content-Type": "application/json",
-      };
 
       // Route to the edit endpoint only when references are actually supplied: the
       // base t2i endpoints reject image inputs, and the edit endpoints *require*
@@ -205,41 +163,18 @@ export function createFalModel(config: FalModelConfig): ModelAdapter {
         body[REFERENCE_FIELD] = chosen.map(toDataUri);
       }
 
-      const submitRes = await falFetch(
-        doFetch,
-        `${QUEUE_BASE}/${endpoint}`,
-        { method: "POST", headers, body: JSON.stringify(body) },
-        ctx.signal,
-      );
-      if (!submitRes.ok) {
-        throw new Error(`fal submit failed (${submitRes.status}): ${await submitRes.text()}`);
-      }
-      const submit = (await submitRes.json()) as FalSubmit;
-      // Prefer fal's authoritative URLs from the submit response; the fallback
-      // mirrors fal's queue scheme (status at `…/requests/{id}/status`, result at
-      // the bare `…/requests/{id}`).
-      const base = `${QUEUE_BASE}/${endpoint}/requests/${submit.request_id}`;
-      const statusUrl = submit.status_url ?? `${base}/status`;
-      const responseUrl = submit.response_url ?? base;
-
-      const deadline = Date.now() + POLL_TIMEOUT_MS;
-      for (;;) {
-        if (ctx.signal?.aborted) throw new Error("fal run aborted");
-        if (Date.now() > deadline) throw new Error(`fal run timed out for ${config.id}`);
-        const statusRes = await falFetch(doFetch, statusUrl, { headers }, ctx.signal);
-        if (!statusRes.ok) {
-          throw new Error(`fal status failed (${statusRes.status}): ${await statusRes.text()}`);
-        }
-        const status = (await statusRes.json()) as FalStatus;
-        if (status.status === "COMPLETED") break;
-        await sleep(POLL_INTERVAL_MS);
+      // Cap merged LoRAs at the endpoint's limit (style LoRA + per-character LoRAs can
+      // exceed it), mirroring the reference cap — earlier entries win (style leads).
+      if (config.maxLoras && Array.isArray(body.loras) && body.loras.length > config.maxLoras) {
+        console.warn(
+          `fal ${config.id}: ${body.loras.length} LoRAs exceed the ${config.maxLoras}-LoRA limit; using the first ${config.maxLoras}.`,
+        );
+        body.loras = body.loras.slice(0, config.maxLoras);
       }
 
-      const resultRes = await falFetch(doFetch, responseUrl, { headers }, ctx.signal);
-      if (!resultRes.ok) {
-        throw new Error(`fal result failed (${resultRes.status}): ${await resultRes.text()}`);
-      }
-      const result = (await resultRes.json()) as FalResult;
+      const result = (await falSubmitAndPoll(doFetch, endpoint, body, ctx, {
+        label: `model ${config.id}`,
+      })) as FalResult;
       const first = result.images?.[0];
       if (!first?.url) throw new Error(`fal returned no image for ${config.id}`);
 
@@ -326,6 +261,7 @@ export const falModels = {
     // SFX lettering) and merges up to 3 LoRAs (style + character + accent).
     mapInput: loraMapInput,
     consumesLoras: true,
+    maxLoras: 3,
     pricing: { kind: "per-megapixel", usd: 0.02 },
   }),
   // Legacy FLUX.1 LoRA — kept for projects pinned to "fal/flux-lora". Strictly

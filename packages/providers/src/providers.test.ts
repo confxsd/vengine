@@ -185,6 +185,25 @@ describe("fal LoRA", () => {
     expect(captured.body?.loras).toBeUndefined();
     expect(falModels.seedream.consumesLoras).toBeUndefined();
   });
+
+  it("caps merged LoRAs at the endpoint's limit (Qwen = 3), keeping the earliest", async () => {
+    const captured: Captured = {};
+    await falModels.qwenLora.run(
+      {
+        prompt: "x",
+        loras: [
+          { path: "style", scale: 1 }, // style leads (frameLoras emits it first)
+          { path: "yue", scale: 1 },
+          { path: "boy", scale: 1 },
+          { path: "socrates", scale: 1 }, // 4th — must be dropped
+        ],
+      },
+      { apiKey: "k", fetch: mockFalFetch(captured) },
+    );
+    const loras = captured.body?.loras as Array<{ path: string }>;
+    expect(loras).toHaveLength(3);
+    expect(loras.map((l) => l.path)).toEqual(["style", "yue", "boy"]);
+  });
 });
 
 describe("fal request cancellation", () => {
@@ -207,5 +226,45 @@ describe("fal request cancellation", () => {
     );
     ac.abort();
     await expect(run).rejects.toThrow();
+  });
+});
+
+describe("fal queue URL routing (405 regression)", () => {
+  /** Records every non-POST URL the adapter polls/fetches, so we can assert it
+   *  honors fal's returned status_url/response_url instead of reconstructing them. */
+  function trackingFetch(polled: string[]): typeof fetch {
+    const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47]);
+    return (async (url: string | URL, init?: RequestInit): Promise<Response> => {
+      const u = String(url);
+      if (init?.method === "POST" && u.includes("queue.fal.run")) {
+        // Sub-pathed edit endpoint: fal roots the queue URLs at the APP, sans "/edit".
+        return new Response(
+          JSON.stringify({
+            request_id: "r9",
+            status_url: "https://queue.fal.run/fal-ai/gemini-3-pro-image-preview/requests/r9/status",
+            response_url: "https://queue.fal.run/fal-ai/gemini-3-pro-image-preview/requests/r9",
+          }),
+          { status: 200 },
+        );
+      }
+      polled.push(u);
+      if (u.endsWith("/status")) return new Response(JSON.stringify({ status: "COMPLETED" }), { status: 200 });
+      if (u.endsWith("/requests/r9"))
+        return new Response(JSON.stringify({ images: [{ url: "https://img/x.png" }] }), { status: 200 });
+      if (u === "https://img/x.png") return new Response(png, { status: 200 });
+      return new Response(`unexpected ${u}`, { status: 405 }); // reconstructed URL would 405
+    }) as typeof fetch;
+  }
+
+  it("polls fal's returned status_url, not a reconstruction of the sub-pathed endpoint", async () => {
+    const polled: string[] = [];
+    await falModels.nanoBananaPro.run(
+      { prompt: "hero", references: [{ bytes: new Uint8Array([1]), mime: "image/png" }] },
+      { apiKey: "k", fetch: trackingFetch(polled) },
+    );
+    // Must hit the APP-rooted status URL fal returned…
+    expect(polled).toContain("https://queue.fal.run/fal-ai/gemini-3-pro-image-preview/requests/r9/status");
+    // …and never the wrong "/edit/requests/..." reconstruction that caused the 405.
+    expect(polled.some((u) => u.includes("/edit/requests/"))).toBe(false);
   });
 });
