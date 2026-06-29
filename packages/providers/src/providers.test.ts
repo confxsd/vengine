@@ -186,3 +186,26 @@ describe("fal LoRA", () => {
     expect(falModels.seedream.consumesLoras).toBeUndefined();
   });
 });
+
+describe("fal request cancellation", () => {
+  /** A fetch that never resolves on its own — it only settles when the request's
+   *  signal aborts, modelling a half-open fal connection. The per-request timeout
+   *  is merged onto `ctx.signal`, so a user cancel must still tear this down. */
+  const hangingFetch: typeof fetch = ((_url: string | URL, init?: RequestInit) =>
+    new Promise<Response>((_resolve, reject) => {
+      const signal = init?.signal;
+      if (!signal) return; // would hang forever — but the adapter always passes one
+      if (signal.aborted) return reject(signal.reason as Error);
+      signal.addEventListener("abort", () => reject(signal.reason as Error), { once: true });
+    })) as typeof fetch;
+
+  it("a cancelled run aborts the in-flight fal request instead of hanging", async () => {
+    const ac = new AbortController();
+    const run = falModels.seedream.run(
+      { prompt: "x" },
+      { apiKey: "k", fetch: hangingFetch, signal: ac.signal },
+    );
+    ac.abort();
+    await expect(run).rejects.toThrow();
+  });
+});

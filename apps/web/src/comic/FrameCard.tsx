@@ -9,6 +9,7 @@ import {
   ImagePlus,
   Library,
   Link2,
+  Loader2,
   Play,
   Star,
   Trash2,
@@ -109,6 +110,13 @@ export function FrameCard({ frame, index, total }: Props) {
   // One-shot border-sweep + brightness pop when a frame finishes generating.
   const [justRendered, setJustRendered] = useState(false);
   const prevStatus = useRef(status);
+  // The reset timer lives in a ref, NOT the effect's cleanup: a run settles in two
+  // status steps (e.g. a cache hit goes queued→cached→done once the live status is
+  // cleared). If the cleanup cleared the timer on that second transition, the reveal
+  // would never turn off — the border would animate forever. Clearing only on
+  // unmount (and before re-arming) lets the timer survive the settle.
+  const revealTimer = useRef<ReturnType<typeof setTimeout>>();
+  useEffect(() => () => clearTimeout(revealTimer.current), []);
   useEffect(() => {
     const was = prevStatus.current;
     prevStatus.current = status;
@@ -120,8 +128,8 @@ export function FrameCard({ frame, index, total }: Props) {
     // A cached frame streams no preview, so scroll it into view here instead.
     cardRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "center" });
     // Slightly longer than the longest CSS animation (border sweep ≈ 2.55s).
-    const t = setTimeout(() => setJustRendered(false), 2700);
-    return () => clearTimeout(t);
+    clearTimeout(revealTimer.current);
+    revealTimer.current = setTimeout(() => setJustRendered(false), 2700);
   }, [status]);
   // Is this frame's displayed image currently one of the project's style references?
   const isStyleRef = useComic(
@@ -298,6 +306,15 @@ export function FrameCard({ frame, index, total }: Props) {
             <Wand2 className="h-3 w-3" />
             Edit
           </button>
+          {/* While this frame regenerates it keeps showing its previous image, so
+              overlay a clear "working" state — otherwise a 30-40s reference gen
+              looks frozen (only the tiny status dot would change). */}
+          {busy && (
+            <div className="pointer-events-none absolute inset-0 z-20 flex flex-col items-center justify-center gap-2 rounded-md bg-black/55 text-[11px] font-medium text-white backdrop-blur-[1px]">
+              <Loader2 className="h-5 w-5 animate-spin" />
+              {status === "queued" ? "queued…" : "generating…"}
+            </div>
+          )}
         </div>
       ) : status === "queued" || status === "running" ? (
         <div className="flex aspect-[9/16] w-full items-center justify-center rounded-md border border-dashed border-border text-[10px] text-faint">

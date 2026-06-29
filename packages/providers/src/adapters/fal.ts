@@ -35,6 +35,16 @@ export interface FalModelConfig {
 const QUEUE_BASE = "https://queue.fal.run";
 const POLL_INTERVAL_MS = 1000;
 const POLL_TIMEOUT_MS = 180_000;
+/**
+ * Per-request ceiling for a single fal HTTP call (submit / status poll / result /
+ * image download). fal holds its queue connections open and Node's `fetch` has no
+ * default timeout, so without this a half-open or stalled socket hangs that one
+ * `await` forever — and the `POLL_TIMEOUT_MS` run deadline never fires because it is
+ * only checked *between* poll iterations, not during a request. Bounding each request
+ * means a stalled connection surfaces as an error (releasing the run) instead of
+ * pinning the frame in the generating state indefinitely.
+ */
+const REQUEST_TIMEOUT_MS = 60_000;
 /** fal's multi-image edit field; shared by FLUX.2 edit and Gemini/Nano Banana edit. */
 const REFERENCE_FIELD = "image_urls";
 
@@ -117,6 +127,29 @@ interface FalResult {
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /**
+ * Issue a fal request with a per-request timeout merged onto the caller's cancel
+ * signal: a single stalled request can never hang forever, yet a user "Cancel run"
+ * (which aborts `ctx.signal`) still propagates and stops the fetch. A timeout
+ * surfaces as a clear error; a cancel propagates as-is so the run reports cancelled.
+ */
+async function falFetch(
+  doFetch: typeof fetch,
+  url: string,
+  init: RequestInit,
+  signal: AbortSignal | undefined,
+): Promise<Response> {
+  const timeout = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
+  const merged = signal ? AbortSignal.any([signal, timeout]) : timeout;
+  try {
+    return await doFetch(url, { ...init, signal: merged });
+  } catch (err) {
+    if (signal?.aborted) throw err; // user cancel — let it propagate unchanged
+    if (timeout.aborted) throw new Error(`fal request timed out after ${REQUEST_TIMEOUT_MS}ms: ${url}`);
+    throw err;
+  }
+}
+
+/**
  * Builds a ModelAdapter backed by fal.ai's async queue API: submit → poll →
  * fetch result → download bytes. One config entry per model. Requires
  * `ctx.apiKey`; throws a clear error if missing so the UI can prompt for a key.
@@ -172,12 +205,12 @@ export function createFalModel(config: FalModelConfig): ModelAdapter {
         body[REFERENCE_FIELD] = chosen.map(toDataUri);
       }
 
-      const submitRes = await doFetch(`${QUEUE_BASE}/${endpoint}`, {
-        method: "POST",
-        headers,
-        body: JSON.stringify(body),
-        signal: ctx.signal,
-      });
+      const submitRes = await falFetch(
+        doFetch,
+        `${QUEUE_BASE}/${endpoint}`,
+        { method: "POST", headers, body: JSON.stringify(body) },
+        ctx.signal,
+      );
       if (!submitRes.ok) {
         throw new Error(`fal submit failed (${submitRes.status}): ${await submitRes.text()}`);
       }
@@ -193,7 +226,7 @@ export function createFalModel(config: FalModelConfig): ModelAdapter {
       for (;;) {
         if (ctx.signal?.aborted) throw new Error("fal run aborted");
         if (Date.now() > deadline) throw new Error(`fal run timed out for ${config.id}`);
-        const statusRes = await doFetch(statusUrl, { headers, signal: ctx.signal });
+        const statusRes = await falFetch(doFetch, statusUrl, { headers }, ctx.signal);
         if (!statusRes.ok) {
           throw new Error(`fal status failed (${statusRes.status}): ${await statusRes.text()}`);
         }
@@ -202,7 +235,7 @@ export function createFalModel(config: FalModelConfig): ModelAdapter {
         await sleep(POLL_INTERVAL_MS);
       }
 
-      const resultRes = await doFetch(responseUrl, { headers, signal: ctx.signal });
+      const resultRes = await falFetch(doFetch, responseUrl, { headers }, ctx.signal);
       if (!resultRes.ok) {
         throw new Error(`fal result failed (${resultRes.status}): ${await resultRes.text()}`);
       }
@@ -210,7 +243,7 @@ export function createFalModel(config: FalModelConfig): ModelAdapter {
       const first = result.images?.[0];
       if (!first?.url) throw new Error(`fal returned no image for ${config.id}`);
 
-      const imgRes = await doFetch(first.url, { signal: ctx.signal });
+      const imgRes = await falFetch(doFetch, first.url, {}, ctx.signal);
       if (!imgRes.ok) throw new Error(`fal image download failed (${imgRes.status})`);
       const bytes = new Uint8Array(await imgRes.arrayBuffer());
 
