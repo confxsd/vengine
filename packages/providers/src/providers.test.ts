@@ -115,6 +115,9 @@ describe("fal reference images", () => {
       { apiKey: "k", fetch: mockFalFetch(captured) },
     );
     expect((captured.body?.image_urls as string[]).length).toBe(5); // maxReferences
+    // The cap is also exposed on the public adapter so the UI can warn before a run.
+    expect(falModels.nanoBananaPro.maxReferences).toBe(5);
+    expect(falModels.seedream.maxReferences).toBeUndefined();
   });
 
   it("non-edit models never advertise or receive references", async () => {

@@ -16,8 +16,10 @@ import {
   frameReferences,
   continuityDirective,
   referenceDirective,
+  paletteDirective,
   identityReferences,
   styleReferences,
+  MAX_REFS_PER_CHARACTER,
   MAX_VARIANTS,
   DEFAULT_NEGATIVE,
   DEFAULT_WIDTH,
@@ -74,6 +76,45 @@ describe("composeFramePrompt", () => {
     expect(out).not.toMatch(/\n{3,}/);
   });
 
+  it("appends a palette directive when the style has a fixed palette", () => {
+    const p = project({
+      style: { theme: "oil painting", model: "mock/gradient", seed: 1, palette: ["#556B2F", "warm sepia"] },
+    });
+    const out = composeFramePrompt(p, p.frames[0]!);
+    expect(out).toContain(paletteDirective(["#556B2F", "warm sepia"]));
+    expect(out).toContain("#556B2F, warm sepia");
+    expect(out).toMatch(/limited palette/i);
+  });
+
+  it("emits nothing for an empty or whitespace-only palette (no dangling directive)", () => {
+    const none = project();
+    expect(composeFramePrompt(none, none.frames[0]!)).not.toMatch(/Color palette:/);
+    expect(paletteDirective([])).toBe("");
+    expect(paletteDirective(["  ", ""])).toBe("");
+    const blank = project({
+      style: { theme: "noir", model: "mock/gradient", seed: 1, palette: ["  ", ""] },
+    });
+    expect(composeFramePrompt(blank, blank.frames[0]!)).not.toMatch(/Color palette:/);
+  });
+
+  it("places the palette before the reference directive on a referenced frame", () => {
+    const p = project({
+      style: {
+        theme: "oil",
+        model: "fal/nano-banana-pro",
+        seed: 1,
+        palette: ["#123456"],
+        anchors: [{ hash: "a".repeat(64), weight: 1 }],
+      },
+    });
+    const out = composeFramePrompt(p, p.frames[0]!);
+    const paletteAt = out.indexOf("Color palette:");
+    const refAt = out.indexOf(referenceDirective("compose"));
+    expect(paletteAt).toBeGreaterThan(-1);
+    expect(refAt).toBeGreaterThan(-1);
+    expect(paletteAt).toBeLessThan(refAt);
+  });
+
   it("appends the re-stage continuity directive by default for a continued frame", () => {
     const sourceImg = "d".repeat(64);
     const p = project({
@@ -103,6 +144,34 @@ describe("composeFramePrompt", () => {
     const out = composeFramePrompt(p, p.frames[1]!);
     expect(out).toContain(continuityDirective("shot"));
     expect(out).not.toMatch(/new composition/i);
+  });
+
+  it("a continuation frame with cast refs sources identity from the sheets, not the prior panel", () => {
+    const sourceImg = "d".repeat(64);
+    const hero = "c".repeat(64);
+    const p = project({
+      cast: [{ id: "hero", name: "Hero", refHashes: [hero] }],
+      frames: [
+        { id: "a", prompt: "the plaza", resultHash: sourceImg },
+        { id: "b", prompt: "the crowd scatters", continuesFrameId: "a" }, // restage + cast refs
+      ],
+    });
+    const out = composeFramePrompt(p, p.frames[1]!);
+    // Identity-aware variant: names the extra images as character sheets and stops
+    // taking likeness from the previous panel.
+    expect(out).toContain(continuityDirective("restage", true));
+    expect(out).toMatch(/character and style reference sheets/i);
+    expect(out).toMatch(/NOT as the source of any character's likeness/i);
+    // The previous panel still governs composition (restage), so this stays.
+    expect(out).toMatch(/new composition/i);
+    // Without cast refs the wording is the plain continuity directive (unchanged).
+    const plain = project({
+      frames: [
+        { id: "a", prompt: "the plaza", resultHash: sourceImg },
+        { id: "b", prompt: "the crowd scatters", continuesFrameId: "a" },
+      ],
+    });
+    expect(composeFramePrompt(plain, plain.frames[1]!)).toContain(continuityDirective("restage"));
   });
 
   it("emits no continuity directive when the link resolves to no image", () => {
@@ -191,14 +260,14 @@ describe("compileComic", () => {
     ]);
   });
 
-  it("merges cast character refs (full weight) after weighted style anchors, deduped", () => {
+  it("merges cast character refs (full weight) before weighted style anchors, deduped", () => {
     const anchor = "a".repeat(64);
     const hero = "b".repeat(64);
     const villain = "c".repeat(64);
     const p = project({
       style: { ...project().style, anchors: [{ hash: anchor, weight: 0.8 }] },
       cast: [
-        { id: "hero", name: "Hero", refHashes: [hero, anchor] }, // anchor reused → must dedupe (keeps 0.8)
+        { id: "hero", name: "Hero", refHashes: [hero, anchor] }, // anchor reused → dedupe keeps the cast lead (full weight)
         { id: "villain", name: "Villain", refHashes: [villain] },
       ],
       // frame "a" has no characterIds → whole cast; frame "b" selects just the hero.
@@ -209,17 +278,17 @@ describe("compileComic", () => {
     });
     const g = compileComic(p);
     expect(g.nodes.find((n) => n.id === genNodeId("a"))!.params.references).toEqual([
-      { hash: anchor, weight: 0.8 },
       { hash: hero, weight: 1 },
+      { hash: anchor, weight: 1 },
       { hash: villain, weight: 1 },
     ]);
     expect(g.nodes.find((n) => n.id === genNodeId("b"))!.params.references).toEqual([
-      { hash: anchor, weight: 0.8 },
       { hash: hero, weight: 1 },
+      { hash: anchor, weight: 1 },
     ]);
   });
 
-  it("includes per-frame refHashes after continuity, before style + cast (deduped)", () => {
+  it("includes per-frame refHashes after continuity, then cast, then style (deduped)", () => {
     const anchor = "a".repeat(64);
     const frameRef = "b".repeat(64);
     const hero = "c".repeat(64);
@@ -230,8 +299,8 @@ describe("compileComic", () => {
     });
     expect(frameReferences(p, p.frames[0]!)).toEqual([
       { hash: frameRef, weight: 1 }, // per-frame ref leads (no continuity here)
+      { hash: hero, weight: 1 }, // cast outranks style so likeness survives truncation
       { hash: anchor, weight: 0.8 },
-      { hash: hero, weight: 1 },
     ]);
     // A frame ref also used as a style anchor dedupes to its first (frame) position.
     const shared = project({
@@ -433,7 +502,7 @@ describe("reference mode (composition vs identity)", () => {
     expect(out).not.toContain(referenceDirective("match"));
   });
 
-  it("continuity governs composition: its directive wins, the reference one is suppressed", () => {
+  it("continuity governs composition and folds identity guidance in (no standalone reference directive)", () => {
     const img = "f".repeat(64);
     const p = project({
       style: { ...project().style, anchors: [{ hash: anchor, weight: 1 }] },
@@ -443,11 +512,13 @@ describe("reference mode (composition vs identity)", () => {
       ],
     });
     const out = composeFramePrompt(p, p.frames[1]!);
-    expect(out).toContain(continuityDirective("restage")); // continuity default
-    expect(out).not.toContain(referenceDirective("compose")); // never two directives
+    // The anchor is an identity ref, so the continuity directive carries identity guidance...
+    expect(out).toContain(continuityDirective("restage", true));
+    // ...rather than a second, standalone reference directive (composition stays single-governed).
+    expect(out).not.toContain(referenceDirective("compose"));
   });
 
-  it("identityReferences excludes continuity but keeps own refs → style → cast", () => {
+  it("identityReferences excludes continuity but keeps own refs → cast → style", () => {
     const own = "b".repeat(64);
     const hero = "c".repeat(64);
     const p = project({
@@ -457,9 +528,30 @@ describe("reference mode (composition vs identity)", () => {
     });
     expect(identityReferences(p, p.frames[0]!)).toEqual([
       { hash: own, weight: 1 },
-      { hash: anchor, weight: 0.5 },
       { hash: hero, weight: 1 },
+      { hash: anchor, weight: 0.5 },
     ]);
+  });
+
+  it("caps a character's contribution at MAX_REFS_PER_CHARACTER (big sheet can't dominate)", () => {
+    // A character sheet auto-split into 4 crops should only feed its first two.
+    const sheet = Array.from({ length: 4 }, (_, i) => i.toString(16).repeat(64).slice(0, 64));
+    const p = project({
+      cast: [{ id: "bunny", name: "Bunny", refHashes: sheet }],
+      frames: [{ id: "a", prompt: "x" }],
+    });
+    const refs = identityReferences(p, p.frames[0]!);
+    expect(refs).toHaveLength(MAX_REFS_PER_CHARACTER);
+    expect(refs.map((r) => r.hash)).toEqual(sheet.slice(0, MAX_REFS_PER_CHARACTER)); // strongest-first
+    // Two characters each keep their own slots — no character is starved by another.
+    const two = project({
+      cast: [
+        { id: "bunny", name: "Bunny", refHashes: sheet },
+        { id: "phil", name: "Phil", refHashes: ["e".repeat(64), "f".repeat(64)] },
+      ],
+      frames: [{ id: "a", prompt: "x" }],
+    });
+    expect(identityReferences(two, two.frames[0]!)).toHaveLength(2 * MAX_REFS_PER_CHARACTER);
   });
 });
 
@@ -479,7 +571,7 @@ describe("in-place edit", () => {
     expect(composeEditPrompt("   ", "restage")).toBe(editDirective("restage"));
   });
 
-  it("leads the reference set with the base, then style + active cast (deduped)", () => {
+  it("leads the reference set with the base, then active cast + style (deduped)", () => {
     const anchor = "a".repeat(64);
     const hero = "b".repeat(64);
     const p = project({
@@ -489,8 +581,8 @@ describe("in-place edit", () => {
     const refs = editReferences(p, p.frames[0]!, base, true);
     expect(refs).toEqual([
       { hash: base, weight: 1 },
-      { hash: anchor, weight: 0.7 },
       { hash: hero, weight: 1 },
+      { hash: anchor, weight: 0.7 },
     ]);
     // keepStyle=false reduces to the lone base image.
     expect(editReferences(p, p.frames[0]!, base, false)).toEqual([{ hash: base, weight: 1 }]);

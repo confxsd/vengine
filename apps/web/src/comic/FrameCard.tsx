@@ -20,6 +20,7 @@ import {
 import {
   buildAssistContext,
   frameImageHash,
+  frameReferences,
   styleReferences,
   type ComicFrame,
 } from "@vengine/shared";
@@ -170,6 +171,15 @@ export function FrameCard({ frame, index, total }: Props) {
   // reference-mode control would be redundant — mirror `composeFramePrompt`'s branch.
   const continuityActive = !!frame.continuesFrameId && !!continuesThumb;
   const referenceMode = frame.referenceMode ?? "compose";
+
+  // Reference-cap warning: the selected model truncates references past its limit
+  // (tail-first — style refs go before cast). The exact set the compiler feeds is
+  // `frameReferences`, so count that and warn before a run silently drops one.
+  const models = useComic((s) => s.models);
+  const selectedModel = models.find((m) => m.id === project?.style.model);
+  const maxRefs = selectedModel?.maxReferences;
+  const refCount = project ? frameReferences(project, frame).length : 0;
+  const refsDropped = maxRefs && refCount > maxRefs ? refCount - maxRefs : 0;
 
   // Drag an image file onto the preview to set it as this frame's output.
   const [dragOver, setDragOver] = useState(false);
@@ -488,6 +498,15 @@ export function FrameCard({ frame, index, total }: Props) {
               </button>
             ))}
           </div>
+        )}
+
+        {/* Reference-cap warning: this frame feeds more references than the model
+            accepts, so a run will silently drop the tail (style refs first). */}
+        {refsDropped > 0 && (
+          <p className="rounded-md bg-amber/12 px-2 py-1 text-[10px] leading-relaxed text-amber">
+            {refCount} references · {refsDropped} dropped — “{selectedModel?.displayName}” accepts {maxRefs}.
+            Style refs are cut first; remove a reference or pick a higher-limit model.
+          </p>
         )}
 
         {/* Composition control: how the frame's identity/style references are used.

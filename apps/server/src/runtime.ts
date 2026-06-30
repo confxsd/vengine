@@ -104,6 +104,8 @@ export function modelManifest(providers: ProviderRegistry) {
     // UI warnings: a cast/anchor or LoRA on a model that ignores it is a silent no-op).
     consumesReferences: m.consumesReferences ?? false,
     consumesLoras: m.consumesLoras ?? false,
+    // Reference cap, so the frame UI can warn before a run silently drops a ref.
+    maxReferences: m.maxReferences,
     pricing: m.pricing,
   }));
 }

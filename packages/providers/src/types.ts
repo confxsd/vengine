@@ -220,6 +220,13 @@ export interface ModelAdapter {
    * non-LoRA model is a cache hit, not a wasted re-bill.
    */
   consumesLoras?: boolean;
+  /**
+   * Hard cap on reference images the vendor edit endpoint accepts; the adapter
+   * truncates extras (tail-first) with a warning. Surfaced on the public adapter so
+   * capability-aware UI can warn *before* a run silently drops a cast/style sheet.
+   * Undefined = no enforced cap.
+   */
+  maxReferences?: number;
   /** Cheap, no-network cost estimate used by the planner's dry-run. */
   estimateCost(input: NormalizedInput): number;
   /** Submit + resolve to a finished asset, hiding async/polling/webhooks. */

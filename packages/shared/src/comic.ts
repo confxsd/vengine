@@ -56,7 +56,9 @@ export const ComicCharacterSchema = z.object({
   /** Stable id frames reference via `frame.characterIds`. */
   id: z.string().min(1),
   name: z.string().default(""),
-  /** Identity reference image hashes (most-distinctive first; models weight earlier refs higher). */
+  /** Identity reference image hashes (most-distinctive first; models weight earlier
+   *  refs higher). Only the first `MAX_REFS_PER_CHARACTER` are fed to any one frame so
+   *  a big auto-split sheet can't monopolise the model's reference budget. */
   refHashes: z.array(z.string().length(64)).default([]),
   /**
    * Trained **character LoRA** for this cast member — the strongest identity lock,
@@ -158,6 +160,16 @@ export function unionVariants(
 /** Default per-reference influence weight (full strength). */
 export const DEFAULT_REFERENCE_WEIGHT = 1;
 
+/**
+ * How many identity references a single character contributes to a frame. A character
+ * sheet ingested via auto-split becomes many crops (`refHashes`), and feeding all of
+ * them lets one character monopolise the model's reference budget — crowding out the
+ * other cast and, on capped models (e.g. Nano Banana's 5), getting the *other*
+ * characters' sheets truncated away. Capping at the most-distinctive few (refHashes
+ * are ordered strongest-first) keeps each character's identity locked while leaving
+ * room for the rest of the cast, continuity and style. */
+export const MAX_REFS_PER_CHARACTER = 2;
+
 /** Influence weight of a scene-continuity reference. Full strength by design: a
  *  continuation must lock the prior scene hard, so it leads at maximum weight. */
 export const DEFAULT_CONTINUITY_WEIGHT = 1;
@@ -177,10 +189,25 @@ export const DEFAULT_CONTINUES_MODE: ContinuesMode = "restage";
  * reference). Without this an edit endpoint defaults to "preserve the canvas and
  * inpaint", which copies the source composition and defeats a re-stage/new-angle
  * prompt. Returned as a trailing directive so the frame's own description still leads.
+ *
+ * When the frame ALSO carries identity/style references (cast sheets, style anchors,
+ * per-frame refs), pass `hasIdentityRefs` so the directive (a) names those extra
+ * images as the canonical character/style sheets and (b) stops sourcing character
+ * likeness from the previous panel — otherwise the model anchors identity to however
+ * a character happened to be posed/occluded in the prior frame instead of its clean
+ * sheet, so the same character drifts between a non-continuation frame and a
+ * continuation of it. The no-identity wording is preserved verbatim.
  */
-export function continuityDirective(mode: ContinuesMode): string {
-  return mode === "shot"
-    ? "Continuity: the reference image is THIS exact shot — preserve its composition, camera angle and framing, and change only what the description above specifies."
+export function continuityDirective(mode: ContinuesMode, hasIdentityRefs = false): string {
+  if (mode === "shot") {
+    const lead = hasIdentityRefs ? "the FIRST attached image" : "the reference image";
+    const base = `Continuity: ${lead} is THIS exact shot — preserve its composition, camera angle and framing, and change only what the description above specifies.`;
+    return hasIdentityRefs
+      ? `${base} The remaining attached images are the character and style reference sheets: keep every character consistent with their own sheet.`
+      : base;
+  }
+  return hasIdentityRefs
+    ? "Continuity: the FIRST attached image is the previous panel of this same scene. Treat it ONLY as a reference for setting, lighting, color palette and wardrobe continuity — NOT as a layout to keep, and NOT as the source of any character's likeness. The remaining attached images are the character and style reference sheets: take each character's identity — face, body, proportions, fur and markings, wardrobe — from their own sheet, matching every character to it rather than to how they happened to appear in the previous panel. Build an entirely NEW composition with its own camera angle, framing and blocking exactly as described above. The new panel may contain different, additional or fewer characters than the previous panel: introduce and arrange every character the description names, each as their own distinct figure. Do NOT simply repaint, recolor or swap the existing figure, do not drop a newly described character, and do not copy the previous panel's framing, camera or poses."
     : "Continuity: the reference image is the previous panel of this same scene. Treat it ONLY as a reference for setting, lighting, color palette, character design and wardrobe — NOT as a layout to keep. Build an entirely NEW composition with its own camera angle, framing and blocking exactly as described above. The new panel may contain different, additional or fewer characters than the reference: introduce and arrange every character the description names, each as their own distinct figure. Do NOT simply repaint, recolor or swap the existing figure, do not drop a newly described character, and do not copy the previous panel's framing, camera or poses.";
 }
 
@@ -271,6 +298,14 @@ export const ComicStyleSchema = z.object({
   anchorHash: z.string().length(64).optional(),
   /** Trained LoRAs applied to every frame (on LoRA-capable models). */
   loras: z.array(ComicLoraSchema).default([]),
+  /**
+   * Fixed color palette (hex codes like `#556B2F` or color names) composed into
+   * every frame's prompt as a dedicated directive — a first-class palette lock,
+   * distinct from the free-text `theme`. Empty = no palette constraint. This is the
+   * structural answer to "keep the colors consistent across frames", which prose in
+   * `theme` only does loosely.
+   */
+  palette: z.array(z.string()).default([]),
   negative: z.string().default(DEFAULT_NEGATIVE),
 });
 export type ComicStyle = z.infer<typeof ComicStyleSchema>;
@@ -309,6 +344,19 @@ export function frameIdFromNodeId(nodeId: string): string | undefined {
 }
 
 /**
+ * A trailing palette directive built from the style's fixed palette, or "" when
+ * none is set. Trimmed + blank entries dropped so an empty/whitespace palette emits
+ * nothing (same "no dangling label" discipline as the template). Phrased as an
+ * instruction so edit/t2i models actually constrain colors rather than treating it
+ * as a caption.
+ */
+export function paletteDirective(palette: string[] | undefined): string {
+  const colors = (palette ?? []).map((c) => c.trim()).filter(Boolean);
+  if (!colors.length) return "";
+  return `Color palette: render using only this limited palette — ${colors.join(", ")}.`;
+}
+
+/**
  * Substitute the template tokens for one frame. This is the "engineered context":
  * deterministic, previewable, and identical to what the compiler bakes into the
  * generation node, so the UI preview never diverges from what actually runs.
@@ -331,18 +379,29 @@ export function composeFramePrompt(project: ComicProject, frame: ComicFrame): st
     .split("\n")
     .map((l) => l.replace(/\s+$/, ""))
     .filter((l) => !/^\s*\p{L}[\p{L} ]*:\s*$/u.test(l));
-  const base = kept.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+  const baseText = kept.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+
+  // Fold in the fixed palette (if any) as a trailing style directive, before the
+  // reference directive, so it applies to every frame regardless of the template and
+  // old projects (no `{palette}` token needed). Empty palette → unchanged prompt.
+  const palette = paletteDirective(project.style.palette);
+  const base = palette ? (baseText ? `${baseText}\n\n${palette}` : palette) : baseText;
 
   // Append exactly one "how to use the reference images" directive, so an edit-capable
   // model knows whether a supplied image is a scene to continue, a layout to copy, or
   // just an identity/style cue — otherwise it silently reproduces whatever it's given.
   // Gated on the same reference sets the compiler feeds, so preview/compile/run match.
-  //   • A resolved continuity link governs composition → continuity directive.
+  //   • A resolved continuity link governs composition → continuity directive (which,
+  //     when cast/style sheets are also present, folds in identity guidance for them).
   //   • Otherwise, any identity/style references → reference directive (compose/match).
-  // Continuity wins so a frame never carries two, possibly conflicting, directives.
+  // Continuity wins on composition so a frame never carries two conflicting layout rules.
   let directive: string | undefined;
   if (continuityReferences(project, frame).length > 0) {
-    directive = continuityDirective(frame.continuesMode ?? DEFAULT_CONTINUES_MODE);
+    // A continuation frame still carries its cast/style sheets as references; tell the
+    // model they're the identity source so character likeness comes from the clean
+    // sheet, not from how the character was posed in the previous panel.
+    const hasIdentityRefs = identityReferences(project, frame).length > 0;
+    directive = continuityDirective(frame.continuesMode ?? DEFAULT_CONTINUES_MODE, hasIdentityRefs);
   } else if (identityReferences(project, frame).length > 0) {
     directive = referenceDirective(frame.referenceMode ?? DEFAULT_REFERENCE_MODE);
   }
@@ -423,9 +482,11 @@ export function composeEditPrompt(instruction: string, mode: EditMode): string {
 /**
  * The ordered, weighted reference set for an in-place edit of `frame`: the chosen
  * base image first at full weight (it dominates — the edit endpoint builds on it),
- * then, when `keepStyle`, the project's style references and the identity refs of the
- * frame's active cast (so the look and characters stay consistent through the edit).
- * Deduped by hash, base first, so the base keeps its leading position even if it's
+ * then, when `keepStyle`, the identity refs of the frame's active cast and the project's
+ * style references (so the characters and look stay consistent through the edit). Cast
+ * leads style for the same reason as `frameReferences`: if the adapter truncates the
+ * tail at the model's image cap, the likeness outranks the look. Deduped by hash, base
+ * first, so the base keeps its leading position even if it's
  * also a style/character ref. Unlike `frameReferences` there is no continuity ref —
  * an edit operates on its own explicit base, not a continued scene.
  */
@@ -441,14 +502,17 @@ export function editReferences(
   const activeCast =
     ids === undefined ? project.cast : project.cast.filter((c) => ids.includes(c.id));
   const characterRefs = activeCast.flatMap((c) =>
-    c.refHashes.map((hash) => ({ hash, weight: DEFAULT_REFERENCE_WEIGHT })),
+    // Cap per character so one big sheet doesn't monopolise the reference budget.
+    c.refHashes
+      .slice(0, MAX_REFS_PER_CHARACTER)
+      .map((hash) => ({ hash, weight: DEFAULT_REFERENCE_WEIGHT })),
   );
   const byHash = new Map<string, ComicReference>();
   for (const ref of [
     base,
     ...frameOwnReferences(frame),
-    ...styleReferences(project.style),
     ...characterRefs,
+    ...styleReferences(project.style),
   ]) {
     if (!byHash.has(ref.hash)) byHash.set(ref.hash, ref);
   }
@@ -524,23 +588,31 @@ export function frameOwnReferences(frame: ComicFrame): ComicReference[] {
 /**
  * The frame's identity/style references — everything that defines its *look* rather
  * than continuing a prior scene: this frame's own attached refs first (per-frame
- * guidance), then the project's style references (look consistency), then the identity
- * refs of each active cast member (character consistency, full weight). Ordered
- * (earlier = stronger) and deduped by hash (first wins). This is the set governed by
- * `referenceMode`/`referenceDirective`; `frameReferences` prepends scene continuity.
+ * guidance), then the identity refs of each active cast member (character consistency,
+ * full weight, capped at `MAX_REFS_PER_CHARACTER` so one big sheet can't dominate the
+ * budget), then the project's style references (look consistency). Ordered
+ * (earlier = stronger) and deduped by hash (first wins). Character refs deliberately
+ * lead style: when a model caps the number of input images and the adapter truncates
+ * the tail (see `maxReferences` in the fal adapter), the look — also carried by the
+ * continuity frame and style LoRAs — is dropped before a character's likeness. This is
+ * the set governed by `referenceMode`/`referenceDirective`; `frameReferences` prepends
+ * scene continuity.
  */
 export function identityReferences(project: ComicProject, frame: ComicFrame): ComicReference[] {
   const ids = frame.characterIds;
   const activeCast =
     ids === undefined ? project.cast : project.cast.filter((c) => ids.includes(c.id));
   const characterRefs = activeCast.flatMap((c) =>
-    c.refHashes.map((hash) => ({ hash, weight: DEFAULT_REFERENCE_WEIGHT })),
+    // Cap per character so one big sheet doesn't monopolise the reference budget.
+    c.refHashes
+      .slice(0, MAX_REFS_PER_CHARACTER)
+      .map((hash) => ({ hash, weight: DEFAULT_REFERENCE_WEIGHT })),
   );
   const byHash = new Map<string, ComicReference>();
   for (const ref of [
     ...frameOwnReferences(frame),
-    ...styleReferences(project.style),
     ...characterRefs,
+    ...styleReferences(project.style),
   ]) {
     if (!byHash.has(ref.hash)) byHash.set(ref.hash, ref);
   }
@@ -550,9 +622,10 @@ export function identityReferences(project: ComicProject, frame: ComicFrame): Co
 /**
  * The full ordered, weighted reference set for one frame: the scene-continuity
  * reference first (this frame continues another's scene, so it leads at full weight),
- * then the frame's identity/style references (own refs → style → active cast). Order
- * matters — models weight earlier references more — so continuity leads, the frame's
- * own refs follow, then style, then characters. Deduped by hash (first wins, so an
+ * then the frame's identity/style references (own refs → active cast → style). Order
+ * matters — models weight earlier references more, and adapters that cap input images
+ * truncate the tail — so continuity leads, the frame's own refs follow, then characters,
+ * then style (the most expendable, also carried by LoRAs). Deduped by hash (first wins, so an
  * image used in two roles keeps its strongest/earliest weight and is sent once).
  * Shared by the compiler and the UI preview so what runs is exactly what the artist sees.
  */

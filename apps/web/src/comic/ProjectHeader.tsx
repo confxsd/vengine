@@ -67,6 +67,69 @@ function StyleRefThumb({ refItem }: { refItem: ComicReference }) {
   );
 }
 
+const HEX_RE = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i;
+
+/** Fixed-palette editor: a comma-separated input (hex or color names) plus live
+ *  swatch chips. Local text state so commas can be typed freely; commits the parsed
+ *  array on blur/Enter. The palette composes into every frame's prompt as a hard
+ *  color directive — a first-class lock vs. loose prose in the style theme. */
+function PaletteField({
+  palette,
+  onChange,
+}: {
+  palette: string[];
+  onChange: (palette: string[]) => void;
+}) {
+  const joined = palette.join(", ");
+  const [text, setText] = useState(joined);
+  // Resync when the committed palette changes from elsewhere (project switch, etc.).
+  useEffect(() => setText(joined), [joined]);
+
+  const commit = (raw: string) => {
+    const next = raw
+      .split(",")
+      .map((c) => c.trim())
+      .filter(Boolean);
+    if (next.join(", ") !== joined) onChange(next);
+  };
+
+  return (
+    <Field label="Color palette">
+      <Input
+        placeholder="#556B2F, #704214, soft umber — comma-separated"
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        onBlur={(e) => commit(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") commit((e.target as HTMLInputElement).value);
+        }}
+      />
+      {palette.length > 0 && (
+        <div className="mt-1 flex flex-wrap items-center gap-1">
+          {palette.map((c, i) => {
+            const v = c.trim();
+            const hex = HEX_RE.test(v);
+            return (
+              <span
+                key={`${v}-${i}`}
+                className="inline-flex items-center gap-1 rounded bg-elevated px-1.5 py-0.5 text-[10px] text-faint"
+              >
+                {hex && (
+                  <span
+                    className="h-3 w-3 rounded-full ring-1 ring-inset ring-white/20"
+                    style={{ backgroundColor: v }}
+                  />
+                )}
+                {v}
+              </span>
+            );
+          })}
+        </div>
+      )}
+    </Field>
+  );
+}
+
 /** Reusable reference library: bank an image once, attach it to style or any cast
  *  member without re-uploading. The single pool every reference is drawn from. */
 function LibraryPanel() {
@@ -332,6 +395,11 @@ export function ProjectHeader() {
             context={buildAssistContext(project, "styleTheme")}
           />
         </Field>
+
+        <PaletteField
+          palette={style.palette ?? []}
+          onChange={(palette) => patchStyle({ palette })}
+        />
 
         <Field label="Model">
           <Select

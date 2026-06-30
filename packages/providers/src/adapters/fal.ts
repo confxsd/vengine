@@ -128,6 +128,7 @@ export function createFalModel(config: FalModelConfig): ModelAdapter {
     // endpoint ignores them" bug structurally impossible.
     consumesReferences: !!config.editEndpoint,
     consumesLoras: config.consumesLoras,
+    maxReferences: config.maxReferences,
     pricing: config.pricing,
 
     estimateCost(input: NormalizedInput): number {

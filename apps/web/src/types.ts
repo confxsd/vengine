@@ -153,6 +153,8 @@ export interface ModelInfo {
   consumesReferences: boolean;
   /** True when the model actually applies LoRAs. */
   consumesLoras: boolean;
+  /** Hard cap on reference images this model accepts; extras are dropped (tail-first). */
+  maxReferences?: number;
   pricing: { kind: string; usd: number };
 }
 
