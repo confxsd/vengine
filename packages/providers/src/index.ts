@@ -23,12 +23,12 @@ export {
 export * from "./text/types.js";
 export { TextProviderRegistry } from "./text/registry.js";
 export {
-  createKimiModel,
-  kimiModels,
-  KIMI_BASE_URL,
-  DEFAULT_KIMI_MODEL,
-  type KimiModelConfig,
-} from "./text/kimi.js";
+  createDeepSeekModel,
+  deepseekModels,
+  DEEPSEEK_BASE_URL,
+  DEFAULT_DEEPSEEK_MODEL,
+  type DeepSeekModelConfig,
+} from "./text/deepseek.js";
 
 // Vision layer (scene understanding: image → structured text).
 export * from "./vision/types.js";

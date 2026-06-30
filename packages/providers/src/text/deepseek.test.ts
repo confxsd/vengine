@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { createKimiModel, kimiModels, DEFAULT_KIMI_MODEL } from "./kimi.js";
+import { createDeepSeekModel, deepseekModels, DEFAULT_DEEPSEEK_MODEL } from "./deepseek.js";
 import { TextProviderRegistry } from "./registry.js";
 
 interface Captured {
@@ -8,8 +8,8 @@ interface Captured {
   auth?: string | null;
 }
 
-/** Mock Moonshot's OpenAI-compatible /chat/completions endpoint. */
-function mockKimiFetch(captured: Captured, reply = "revised text"): typeof fetch {
+/** Mock DeepSeek's OpenAI-compatible /chat/completions endpoint. */
+function mockDeepSeekFetch(captured: Captured, reply = "revised text"): typeof fetch {
   return (async (url: string | URL, init?: RequestInit): Promise<Response> => {
     captured.url = String(url);
     captured.body = JSON.parse(String(init?.body));
@@ -20,53 +20,53 @@ function mockKimiFetch(captured: Captured, reply = "revised text"): typeof fetch
   }) as typeof fetch;
 }
 
-describe("kimi adapter", () => {
+describe("deepseek adapter", () => {
   it("posts to chat/completions with bearer auth and returns the reply", async () => {
     const captured: Captured = {};
-    const out = await kimiModels.k2.complete(
+    const out = await deepseekModels.chat.complete(
       { messages: [{ role: "user", content: "hi" }] },
-      { apiKey: "secret", fetch: mockKimiFetch(captured, "  enriched  ") },
+      { apiKey: "secret", fetch: mockDeepSeekFetch(captured, "  enriched  ") },
     );
-    expect(captured.url).toBe("https://api.moonshot.ai/v1/chat/completions");
+    expect(captured.url).toBe("https://api.deepseek.com/v1/chat/completions");
     expect(captured.auth).toBe("Bearer secret");
-    expect(captured.body?.model).toBe(DEFAULT_KIMI_MODEL);
+    expect(captured.body?.model).toBe(DEFAULT_DEEPSEEK_MODEL);
     expect(out.text).toBe("enriched"); // trimmed
-    expect(out.model).toBe(DEFAULT_KIMI_MODEL);
+    expect(out.model).toBe(DEFAULT_DEEPSEEK_MODEL);
   });
 
   it("throws a clear error when the API key is missing", async () => {
     await expect(
-      kimiModels.k2.complete({ messages: [] }, {}),
-    ).rejects.toThrow(/KIMI_KEY/);
+      deepseekModels.chat.complete({ messages: [] }, {}),
+    ).rejects.toThrow(/DEEPSEEK_KEY/);
   });
 
   it("surfaces a non-2xx response as an error", async () => {
     const fetchErr = (async () =>
       new Response("nope", { status: 401 })) as typeof fetch;
     await expect(
-      kimiModels.k2.complete({ messages: [] }, { apiKey: "k", fetch: fetchErr }),
+      deepseekModels.chat.complete({ messages: [] }, { apiKey: "k", fetch: fetchErr }),
     ).rejects.toThrow(/401/);
   });
 
-  it("honors a baseUrl override (e.g. the mainland endpoint)", async () => {
+  it("honors a baseUrl override", async () => {
     const captured: Captured = {};
-    const cn = createKimiModel({
-      id: "kimi/cn",
-      displayName: "Kimi CN",
-      baseUrl: "https://api.moonshot.cn/v1/",
+    const alt = createDeepSeekModel({
+      id: "deepseek/alt",
+      displayName: "DeepSeek Alt",
+      baseUrl: "https://api.deepseek.com/beta/",
     });
-    await cn.complete(
+    await alt.complete(
       { messages: [{ role: "user", content: "x" }] },
-      { apiKey: "k", fetch: mockKimiFetch(captured) },
+      { apiKey: "k", fetch: mockDeepSeekFetch(captured) },
     );
-    expect(captured.url).toBe("https://api.moonshot.cn/v1/chat/completions"); // trailing slash trimmed
+    expect(captured.url).toBe("https://api.deepseek.com/beta/chat/completions"); // trailing slash trimmed
   });
 });
 
 describe("TextProviderRegistry", () => {
   it("registers and resolves adapters", () => {
-    const reg = new TextProviderRegistry().registerAll(Object.values(kimiModels));
-    expect(reg.get("kimi/k2")?.provider).toBe("kimi");
+    const reg = new TextProviderRegistry().registerAll(Object.values(deepseekModels));
+    expect(reg.get("deepseek/chat")?.provider).toBe("deepseek");
     expect(reg.list()).toHaveLength(1);
     expect(() => reg.require("nope/none")).toThrow(/Unknown text model/);
   });

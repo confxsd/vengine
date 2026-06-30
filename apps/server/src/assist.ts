@@ -11,7 +11,7 @@ import type { Runtime } from "./runtime.js";
  */
 
 /** Preferred text model; falls back to whatever is registered first. */
-const DEFAULT_TEXT_MODEL = "kimi/k2";
+const DEFAULT_TEXT_MODEL = "deepseek/chat";
 
 /** Shared rules every revision must obey, regardless of field or mode. */
 const GLOBAL_SYSTEM = `You are a careful, conservative copy editor inside vengine, a studio for contemporary-art comics (vertical 9:16 single drawings, no text rendered in the image).

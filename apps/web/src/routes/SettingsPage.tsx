@@ -32,7 +32,7 @@ export default function SettingsPage() {
     {
       name: "AI text assist",
       description: "Polish, enrich and fix prompt/prose fields in the studio.",
-      env: "KIMI_KEY",
+      env: "DEEPSEEK_KEY",
       config: assist,
     },
     {
@@ -70,7 +70,7 @@ export default function SettingsPage() {
                 vision model
               </li>
               <li>
-                <code className="text-muted">KIMI_KEY</code> — AI text assist (Moonshot)
+                <code className="text-muted">DEEPSEEK_KEY</code> — AI text assist (DeepSeek)
               </li>
             </ul>
           </div>

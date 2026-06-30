@@ -1,6 +1,6 @@
 /**
  * The text/LLM provider abstraction — the textual counterpart to the image
- * `ModelAdapter`. Every chat-completion vendor (Kimi/Moonshot, and later
+ * `ModelAdapter`. Every chat-completion vendor (DeepSeek, and later
  * Claude/OpenAI/etc.) implements `TextAdapter`, normalizing a neutral message
  * list and hiding each API's request/response shape. Adding a vendor = adding an
  * adapter; the assist routes and the UI never change.
@@ -38,9 +38,9 @@ export interface TextProviderCtx {
 }
 
 export interface TextAdapter {
-  /** Stable unique id, "<provider>/<model>", e.g. "kimi/k2". */
+  /** Stable unique id, "<provider>/<model>", e.g. "deepseek/chat". */
   id: string;
-  /** Provider key; the env var is `${provider.toUpperCase()}_KEY` (e.g. KIMI_KEY). */
+  /** Provider key; the env var is `${provider.toUpperCase()}_KEY` (e.g. DEEPSEEK_KEY). */
   provider: string;
   displayName: string;
   /** The remote model identifier sent to the vendor. */
