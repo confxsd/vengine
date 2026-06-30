@@ -7,6 +7,9 @@ import type {
   ComicVariant,
   Library,
   LibraryCharacter,
+  SceneReference,
+  SceneBreakdown,
+  Series,
   StylePack,
   TrainedLora,
   NodeProgressEvent,
@@ -24,9 +27,18 @@ export type {
   ComicVariant,
   Library,
   LibraryCharacter,
+  SceneReference,
+  SceneBreakdown,
+  Series,
   StylePack,
   TrainedLora,
 };
+
+/** Availability probe for scene description (mirrors `GET /api/scenes/config`). */
+export interface SceneConfig {
+  available: boolean;
+  model: string | null;
+}
 
 /** Trainer manifest entry (mirrors the server's `trainerManifest`). */
 export interface TrainerInfo {

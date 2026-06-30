@@ -9,6 +9,8 @@ import {
   type LibraryCharacter,
   type StylePack,
   type TrainedLora,
+  type SceneReference,
+  type Series,
 } from "@vengine/shared";
 
 export interface LibraryStoreOptions {
@@ -213,5 +215,70 @@ export class LibraryStore {
       // Detach any character pointing at the deleted LoRA so nothing dangles.
       characters: lib.characters.map((c) => (c.loraId === id ? { ...c, loraId: undefined } : c)),
     }));
+  }
+
+  // --- Scenes -------------------------------------------------------------
+
+  /** Insert or replace a scene reference by id, stamping timestamps. */
+  async upsertScene(s: SceneReference): Promise<SceneReference> {
+    const now = new Date().toISOString();
+    let saved: SceneReference = s;
+    await this.update((lib) => {
+      const i = lib.scenes.findIndex((x) => x.id === s.id);
+      saved = { ...s, createdAt: i >= 0 ? lib.scenes[i]!.createdAt ?? now : now, updatedAt: now };
+      const scenes = i >= 0 ? lib.scenes.map((x, j) => (j === i ? saved : x)) : [...lib.scenes, saved];
+      return { ...lib, scenes };
+    });
+    return saved;
+  }
+
+  /**
+   * Patch a single scene in place *under the lock* (e.g. the describe job writing
+   * back its breakdown, or a user edit of one field) without clobbering a concurrent
+   * change to another field. No-op (returns undefined) if the scene is gone.
+   */
+  async patchScene(id: string, patch: Partial<SceneReference>): Promise<SceneReference | undefined> {
+    let result: SceneReference | undefined;
+    await this.update((lib) => {
+      const i = lib.scenes.findIndex((x) => x.id === id);
+      if (i < 0) return lib;
+      result = { ...lib.scenes[i]!, ...patch, updatedAt: new Date().toISOString() };
+      return { ...lib, scenes: lib.scenes.map((x, j) => (j === i ? result! : x)) };
+    });
+    return result;
+  }
+
+  async removeScene(id: string): Promise<void> {
+    await this.update((lib) => ({ ...lib, scenes: lib.scenes.filter((s) => s.id !== id) }));
+  }
+
+  // --- Series -------------------------------------------------------------
+
+  async upsertSeries(s: Series): Promise<Series> {
+    const now = new Date().toISOString();
+    let saved: Series = s;
+    await this.update((lib) => {
+      const i = lib.series.findIndex((x) => x.id === s.id);
+      saved = { ...s, createdAt: i >= 0 ? lib.series[i]!.createdAt ?? now : now, updatedAt: now };
+      const series = i >= 0 ? lib.series.map((x, j) => (j === i ? saved : x)) : [...lib.series, saved];
+      return { ...lib, series };
+    });
+    return saved;
+  }
+
+  /** Patch a single series in place under the lock. No-op if the id is gone. */
+  async patchSeries(id: string, patch: Partial<Series>): Promise<Series | undefined> {
+    let result: Series | undefined;
+    await this.update((lib) => {
+      const i = lib.series.findIndex((x) => x.id === id);
+      if (i < 0) return lib;
+      result = { ...lib.series[i]!, ...patch, updatedAt: new Date().toISOString() };
+      return { ...lib, series: lib.series.map((x, j) => (j === i ? result! : x)) };
+    });
+    return result;
+  }
+
+  async removeSeries(id: string): Promise<void> {
+    await this.update((lib) => ({ ...lib, series: lib.series.filter((s) => s.id !== id) }));
   }
 }

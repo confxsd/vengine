@@ -4,6 +4,9 @@ import { api, connectLibrary } from "./api";
 import type {
   Library,
   LibraryCharacter,
+  SceneReference,
+  SceneBreakdown,
+  Series,
   StylePack,
   TrainedLora,
   TrainerInfo,
@@ -11,7 +14,7 @@ import type {
   SheetBox,
 } from "./types";
 
-const EMPTY: Library = { characters: [], styles: [], trainedLoras: [] };
+const EMPTY: Library = { characters: [], styles: [], trainedLoras: [], scenes: [], series: [] };
 const newId = () => crypto.randomUUID().slice(0, 8);
 
 /** Guard against a second WS / double-load on a hot-reload remount. */
@@ -47,6 +50,16 @@ interface LibraryState {
   createStyle: (name: string) => Promise<void>;
   patchStylePack: (id: string, patch: Partial<StylePack>) => Promise<void>;
   deleteStyle: (id: string) => Promise<void>;
+
+  /** Describe an uploaded scene image; inserts/updates the resulting record. */
+  describeScene: (hash: string, name?: string) => Promise<SceneReference>;
+  /** Edit a saved scene's name / tags / breakdown (merged server-side). */
+  patchScene: (id: string, patch: { name?: string; tags?: string[]; description?: Partial<SceneBreakdown> }) => Promise<void>;
+  deleteScene: (id: string) => Promise<void>;
+
+  createSeries: (name: string) => Promise<Series | undefined>;
+  patchSeriesPack: (id: string, patch: Partial<Series>) => Promise<void>;
+  deleteSeries: (id: string) => Promise<void>;
 
   startTraining: (req: StartTrainingRequest) => Promise<void>;
   deleteLora: (id: string) => Promise<void>;
@@ -128,6 +141,30 @@ export const useLibrary = create<LibraryState>((set, get) => {
         set((s) => ({ library: { ...s.library, styles: s.library.styles.map((x) => (x.id === id ? saved : x)) } }));
       } catch (err) {
         toast.error("Couldn't save style", { description: (err as Error).message });
+        void get().refetch();
+      }
+    });
+  };
+
+  const commitSeries = (id: string, mutate: (s: Series) => Series): Promise<void> => {
+    let changed = false;
+    set((s) => {
+      const ser = s.library.series.find((x) => x.id === id);
+      if (!ser) return s;
+      const next = mutate(ser);
+      if (next === ser) return s;
+      changed = true;
+      return { library: { ...s.library, series: s.library.series.map((x) => (x.id === id ? next : x)) } };
+    });
+    if (!changed) return Promise.resolve();
+    return serialize(async () => {
+      const latest = get().library.series.find((x) => x.id === id);
+      if (!latest) return;
+      try {
+        const saved = await api.upsertSeries(latest);
+        set((s) => ({ library: { ...s.library, series: s.library.series.map((x) => (x.id === id ? saved : x)) } }));
+      } catch (err) {
+        toast.error("Couldn't save series", { description: (err as Error).message });
         void get().refetch();
       }
     });
@@ -255,6 +292,62 @@ export const useLibrary = create<LibraryState>((set, get) => {
     deleteStyle: async (id) => {
       set((s) => ({ library: { ...s.library, styles: s.library.styles.filter((x) => x.id !== id) } }));
       await api.removeStyle(id).catch(() => void get().refetch());
+    },
+
+    describeScene: async (hash, name) => {
+      // The server persists the record (ready or failed) and returns it; adopt it
+      // directly (upsert by id) so the scene appears without a separate refetch.
+      const scene = await api.describeScene(hash, name);
+      set((s) => {
+        const exists = s.library.scenes.some((x) => x.id === scene.id);
+        const scenes = exists
+          ? s.library.scenes.map((x) => (x.id === scene.id ? scene : x))
+          : [scene, ...s.library.scenes];
+        return { library: { ...s.library, scenes } };
+      });
+      return scene;
+    },
+
+    patchScene: async (id, patch) => {
+      try {
+        const saved = await api.patchScene(id, patch);
+        set((s) => ({
+          library: { ...s.library, scenes: s.library.scenes.map((x) => (x.id === id ? saved : x)) },
+        }));
+      } catch (err) {
+        toast.error("Couldn't save scene", { description: (err as Error).message });
+        void get().refetch();
+      }
+    },
+
+    deleteScene: async (id) => {
+      set((s) => ({ library: { ...s.library, scenes: s.library.scenes.filter((x) => x.id !== id) } }));
+      await api.removeScene(id).catch(() => void get().refetch());
+    },
+
+    createSeries: async (name) => {
+      const draft: Series = {
+        id: newId(),
+        name: name.trim() || "New series",
+        description: "",
+        projectIds: [],
+        castIds: [],
+      };
+      try {
+        const saved = await api.upsertSeries(draft);
+        set((s) => ({ library: { ...s.library, series: [...s.library.series, saved] } }));
+        return saved;
+      } catch (err) {
+        toast.error("Couldn't create series", { description: (err as Error).message });
+        return undefined;
+      }
+    },
+
+    patchSeriesPack: (id, patch) => commitSeries(id, (s) => ({ ...s, ...patch })),
+
+    deleteSeries: async (id) => {
+      set((s) => ({ library: { ...s.library, series: s.library.series.filter((x) => x.id !== id) } }));
+      await api.removeSeries(id).catch(() => void get().refetch());
     },
 
     startTraining: async (req) => {

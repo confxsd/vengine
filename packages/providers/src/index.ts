@@ -29,3 +29,14 @@ export {
   DEFAULT_KIMI_MODEL,
   type KimiModelConfig,
 } from "./text/kimi.js";
+
+// Vision layer (scene understanding: image → structured text).
+export * from "./vision/types.js";
+export { VisionProviderRegistry } from "./vision/registry.js";
+export {
+  createFalVisionModel,
+  falVisionModels,
+  FAL_VISION_ENDPOINT,
+  DEFAULT_FAL_VISION_MODEL,
+  type FalVisionConfig,
+} from "./vision/fal-vision.js";

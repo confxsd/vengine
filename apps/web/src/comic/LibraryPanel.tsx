@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import {
   CheckCircle2,
   ImageDown,
   Loader2,
+  Maximize2,
   Plus,
   Sparkles,
   Trash2,
@@ -15,7 +17,8 @@ import { TrainingStatus, type StylePack } from "@vengine/shared";
 import { useLibrary } from "../libraryStore";
 import { useComic } from "../comicStore";
 import { api } from "../api";
-import { Badge, Button, Input, Segmented, Textarea } from "../components/ui";
+import { Badge, Button, Input, Segmented } from "../components/ui";
+import { SyncedInput, SyncedTextarea } from "../components/SyncedInput";
 import type { LibraryCharacter, TrainedLora } from "../types";
 import { TrainModal } from "./TrainModal";
 import { SheetImportModal } from "./SheetImportModal";
@@ -27,75 +30,6 @@ const TABS = [
   { value: "styles" as const, label: "Styles" },
   { value: "models" as const, label: "Models" },
 ];
-
-/**
- * Inputs that **resync to the server value while not focused**. The library is the
- * source of truth, so a record can change under us (a WS-driven refetch, a name the
- * server normalized) — an uncontrolled `defaultValue` would silently keep showing the
- * stale text and a blur could then save the stale value back. These hold local edits
- * while focused and adopt the prop otherwise, committing on blur only when changed.
- */
-function SyncedInput({
-  value,
-  onCommit,
-  className,
-  placeholder,
-}: {
-  value: string;
-  onCommit: (v: string) => void;
-  className?: string;
-  placeholder?: string;
-}) {
-  const [local, setLocal] = useState(value);
-  const [focused, setFocused] = useState(false);
-  useEffect(() => {
-    if (!focused) setLocal(value);
-  }, [value, focused]);
-  return (
-    <Input
-      className={className}
-      placeholder={placeholder}
-      value={local}
-      onChange={(e) => setLocal(e.target.value)}
-      onFocus={() => setFocused(true)}
-      onBlur={() => {
-        setFocused(false);
-        if (local !== value) onCommit(local);
-      }}
-    />
-  );
-}
-
-function SyncedTextarea({
-  value,
-  onCommit,
-  className,
-  placeholder,
-}: {
-  value: string;
-  onCommit: (v: string) => void;
-  className?: string;
-  placeholder?: string;
-}) {
-  const [local, setLocal] = useState(value);
-  const [focused, setFocused] = useState(false);
-  useEffect(() => {
-    if (!focused) setLocal(value);
-  }, [value, focused]);
-  return (
-    <Textarea
-      className={className}
-      placeholder={placeholder}
-      value={local}
-      onChange={(e) => setLocal(e.target.value)}
-      onFocus={() => setFocused(true)}
-      onBlur={() => {
-        setFocused(false);
-        if (local !== value) onCommit(local);
-      }}
-    />
-  );
-}
 
 /**
  * The cross-project Library slide-over — a global overlay reachable from both the
@@ -168,7 +102,7 @@ export function LibraryPanel() {
 
 /* ─────────────────────────────── Characters ─────────────────────────────── */
 
-function CharactersTab() {
+export function CharactersTab() {
   const characters = useLibrary((s) => s.library.characters);
   const createCharacter = useLibrary((s) => s.createCharacter);
   const [name, setName] = useState("");
@@ -231,11 +165,20 @@ function CharacterRow({
   const patchCharacter = useLibrary((s) => s.patchCharacter);
   const deleteCharacter = useLibrary((s) => s.deleteCharacter);
   const addCharacterRef = useLibrary((s) => s.addCharacterRef);
+  const setOpen = useLibrary((s) => s.setOpen);
   const lora = useLibrary((s) => s.loraById(character.loraId));
   const hasProject = useComic((s) => !!s.project);
   const addCast = useComic((s) => s.addCastFromLibrary);
+  const navigate = useNavigate();
   const fileRef = useRef<HTMLInputElement>(null);
   const [busy, setBusy] = useState(false);
+
+  // Jump to the full-page character editor (description, palette, refs, training).
+  // Close the slide-over first so the detail page isn't left behind the overlay.
+  const openDetails = () => {
+    setOpen(false);
+    navigate(`/library/characters/${character.id}`);
+  };
 
   const onPick = async (files: FileList | null) => {
     if (!files?.length) return;
@@ -253,6 +196,9 @@ function CharacterRow({
           onCommit={(v) => void patchCharacter(character.id, { name: v })}
         />
         <LoraStatusBadge lora={lora} />
+        <button title="Open details" onClick={openDetails} className="text-faint hover:text-text">
+          <Maximize2 className="h-3.5 w-3.5" />
+        </button>
         <button
           title="Remove character"
           onClick={() => void deleteCharacter(character.id)}
@@ -343,7 +289,7 @@ function LoraStatusBadge({ lora }: { lora?: TrainedLora }) {
 
 /* ───────────────────────────────── Styles ───────────────────────────────── */
 
-function StylesTab() {
+export function StylesTab() {
   const styles = useLibrary((s) => s.library.styles);
   const createStyle = useLibrary((s) => s.createStyle);
   const [name, setName] = useState("");
@@ -448,7 +394,7 @@ function StyleRow({ style }: { style: StylePack }) {
 
 /* ───────────────────────────────── Models ───────────────────────────────── */
 
-function ModelsTab() {
+export function ModelsTab() {
   const loras = useLibrary((s) => s.library.trainedLoras);
   return (
     <div className="flex flex-col gap-2">

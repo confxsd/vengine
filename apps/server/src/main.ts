@@ -15,6 +15,7 @@ import { createRuntime, modelManifest, nodeManifest } from "./runtime.js";
 import { registerComicRoutes } from "./comics.js";
 import { registerAssistRoutes } from "./assist.js";
 import { registerLibraryRoutes } from "./library.js";
+import { registerSceneRoutes } from "./scenes.js";
 
 // Load secrets from a .env file (server cwd, then up to the repo root) into
 // process.env before anything reads a key. Real env vars always take precedence.
@@ -66,6 +67,8 @@ registerAssistRoutes(app, rt);
 
 // Cross-project Library (characters, style packs) + durable LoRA training.
 const training = registerLibraryRoutes(app, rt, broadcast);
+// Scene understanding: describe a reference image into a reusable breakdown.
+registerSceneRoutes(app, rt);
 // Seed the built-in style packs (Comic / Oil / Ink / Watercolor) on first run —
 // the decoupling from "comics only". Existing/edited packs are left untouched.
 rt.library

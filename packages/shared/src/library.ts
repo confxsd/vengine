@@ -6,6 +6,7 @@ import {
   DEFAULT_NEGATIVE,
   DEFAULT_WIDTH,
 } from "./comic.js";
+import { SceneReferenceSchema, SeriesSchema } from "./scene.js";
 
 /**
  * The **cross-project library**: durable creative assets that outlive any single
@@ -206,12 +207,17 @@ export const LibrarySchema = z.object({
   characters: z.array(LibraryCharacterSchema).default([]),
   styles: z.array(StylePackSchema).default([]),
   trainedLoras: z.array(TrainedLoraSchema).default([]),
+  /** Saved scene references (image→text breakdowns). Defaulted so existing
+   *  documents written before this field load as valid, empty collections. */
+  scenes: z.array(SceneReferenceSchema).default([]),
+  /** Long-form groupings of projects sharing a cast + default style. */
+  series: z.array(SeriesSchema).default([]),
 });
 export type Library = z.infer<typeof LibrarySchema>;
 
 /** An empty library — the default when no document exists yet. */
 export function emptyLibrary(): Library {
-  return { characters: [], styles: [], trainedLoras: [] };
+  return { characters: [], styles: [], trainedLoras: [], scenes: [], series: [] };
 }
 
 /**

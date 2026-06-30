@@ -2,6 +2,7 @@ import type { Hono } from "hono";
 import {
   LibraryCharacterSchema,
   StylePackSchema,
+  SeriesSchema,
   LoraKind,
   type TrainingProgressEvent,
 } from "@vengine/shared";
@@ -144,6 +145,19 @@ export function registerLibraryRoutes(
   });
   app.delete("/api/library/styles/:id", async (c) => {
     await rt.library.removeStyle(c.req.param("id"));
+    return c.json({ ok: true });
+  });
+
+  // --- Series -------------------------------------------------------------
+  // Long-form groupings of projects sharing a cast + default style. Upsert the whole
+  // record (mirrors styles); the client edits optimistically and PUTs the result.
+  app.put("/api/library/series", async (c) => {
+    const parsed = SeriesSchema.safeParse(await c.req.json().catch(() => ({})));
+    if (!parsed.success) return c.json({ error: parsed.error.message }, 400);
+    return c.json(await rt.library.upsertSeries(parsed.data));
+  });
+  app.delete("/api/library/series/:id", async (c) => {
+    await rt.library.removeSeries(c.req.param("id"));
     return c.json({ ok: true });
   });
 

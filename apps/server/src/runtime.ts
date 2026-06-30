@@ -3,6 +3,8 @@ import {
   ProviderRegistry,
   TextProviderRegistry,
   TrainingRegistry,
+  VisionProviderRegistry,
+  createFalVisionModel,
   mockModel,
   falModels,
   falTrainers,
@@ -20,6 +22,8 @@ export interface Runtime {
   providers: ProviderRegistry;
   /** Text/LLM adapters (prompt assist, intelligence features). */
   textProviders: TextProviderRegistry;
+  /** Vision/VLM adapters (scene understanding: image → structured text). */
+  visionProviders: VisionProviderRegistry;
   /** LoRA training adapters (character/style fine-tunes). */
   trainers: TrainingRegistry;
   registry: NodeRegistry;
@@ -39,6 +43,16 @@ export function createRuntime(): Runtime {
   // Text models power AI text assist (KIMI_KEY); empty key just disables the feature.
   const textProviders = new TextProviderRegistry().registerAll(Object.values(kimiModels));
 
+  // Vision models power scene understanding (FAL_KEY); the underlying VLM is
+  // env-overridable so a stronger model can be swapped in without a code change.
+  const visionProviders = new VisionProviderRegistry().register(
+    createFalVisionModel({
+      id: "fal/vision",
+      displayName: "fal Vision (any-LLM)",
+      model: process.env.FAL_VISION_MODEL,
+    }),
+  );
+
   // LoRA trainers (FAL_KEY); empty key just disables training.
   const trainers = new TrainingRegistry().registerAll(Object.values(falTrainers));
 
@@ -55,7 +69,18 @@ export function createRuntime(): Runtime {
     getApiKey: (provider) => process.env[`${provider.toUpperCase()}_KEY`],
   };
 
-  return { providers, textProviders, trainers, registry, assets, projects, library, executor, services };
+  return {
+    providers,
+    textProviders,
+    visionProviders,
+    trainers,
+    registry,
+    assets,
+    projects,
+    library,
+    executor,
+    services,
+  };
 }
 
 /** Structural node manifest for the client palette/inspector (no executor logic). */

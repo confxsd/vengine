@@ -1,6 +1,5 @@
 import { Calculator, Play, Plus, RotateCcw } from "lucide-react";
 import { useStudio } from "../store";
-import { ModeToggle } from "./ModeToggle";
 import { LibraryButton } from "./LibraryButton";
 import { Button, Segmented, Select, ThemeToggle } from "./ui";
 
@@ -31,7 +30,6 @@ export function Toolbar() {
           vengine
         </span>
       </div>
-      <ModeToggle />
       <LibraryButton />
 
       <div className="mx-1 h-5 w-px bg-border" />

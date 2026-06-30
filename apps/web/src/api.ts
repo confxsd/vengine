@@ -7,6 +7,9 @@ import type {
   GraphDocument,
   Library,
   LibraryCharacter,
+  SceneReference,
+  SceneBreakdown,
+  Series,
   StylePack,
   TrainedLora,
   TrainingProgressEvent,
@@ -23,6 +26,7 @@ import type {
   ProjectSummary,
   RunPlan,
   RunResult,
+  SceneConfig,
   SnapshotEntry,
   SheetBox,
   SheetSegmentResult,
@@ -140,6 +144,42 @@ export const api = {
       characterId,
       boxes,
     }),
+
+  // ── Scenes (image → text) ──────────────────────────────────────────────────────
+  sceneConfig: () => fetch("/api/scenes/config").then(json<SceneConfig>),
+  /**
+   * Describe an uploaded scene image into a structured breakdown. The server persists
+   * a record either way: on a model failure it returns the **failed scene** (200-style
+   * body with status "failed" + error) rather than nothing, so we surface that record
+   * instead of throwing — only a malformed/blocked request (no scene id) throws.
+   */
+  describeScene: async (hash: string, name?: string): Promise<SceneReference> => {
+    const res = await fetch("/api/scenes/describe", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ hash, name }),
+    });
+    const data = (await res.json().catch(() => ({}))) as SceneReference & { error?: string };
+    if (!res.ok && !data?.id) throw new Error(data?.error || `${res.status}`);
+    return data;
+  },
+  patchScene: (id: string, patch: { name?: string; tags?: string[]; description?: Partial<SceneBreakdown> }) =>
+    fetch(`/api/scenes/${id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(patch),
+    }).then(json<SceneReference>),
+  removeScene: (id: string) => fetch(`/api/scenes/${id}`, { method: "DELETE" }).then((r) => r.ok),
+
+  // ── Series ─────────────────────────────────────────────────────────────────────
+  upsertSeries: (s: Series) =>
+    fetch("/api/library/series", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(s),
+    }).then(json<Series>),
+  removeSeries: (id: string) =>
+    fetch(`/api/library/series/${id}`, { method: "DELETE" }).then((r) => r.ok),
 };
 
 /**

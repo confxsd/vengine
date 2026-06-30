@@ -1,7 +1,6 @@
 import { useEffect } from "react";
 import { Calculator, Layers, Play, Plus, X } from "lucide-react";
 import { useComic } from "../comicStore";
-import { ModeToggle } from "../components/ModeToggle";
 import { LibraryButton } from "../components/LibraryButton";
 import { Button, Input, Segmented, Select, ThemeToggle } from "../components/ui";
 import { ProjectHeader } from "./ProjectHeader";
@@ -58,7 +57,6 @@ export function ComicStudio() {
             vengine
           </span>
         </div>
-        <ModeToggle />
         <LibraryButton />
 
         <div className="mx-1 h-5 w-px bg-border" />

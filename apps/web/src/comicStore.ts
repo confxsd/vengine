@@ -67,6 +67,8 @@ interface ComicState {
   patchStyle: (patch: Partial<ComicStyle>) => void;
 
   addFrame: () => void;
+  /** Append a frame seeded with a prompt (e.g. from a saved scene's caption). */
+  addFrameFromScene: (prompt: string) => void;
   removeFrame: (id: string) => void;
   /** Delete one generated image from a frame's history (server-authoritative). */
   removeVariant: (frameId: string, hash: string) => Promise<void>;
@@ -465,6 +467,11 @@ export const useComic = create<ComicState>((set, get) => {
       mutate((p) => ({
         ...p,
         frames: [...p.frames, { id: newFrameId(), prompt: "", variants: [], refHashes: [] }],
+      })),
+    addFrameFromScene: (prompt) =>
+      mutate((p) => ({
+        ...p,
+        frames: [...p.frames, { id: newFrameId(), prompt, variants: [], refHashes: [] }],
       })),
     // Drop the frame and clear any continuation links pointing at it, so no frame
     // is left referencing a deleted scene (compile ignores unknown ids regardless).

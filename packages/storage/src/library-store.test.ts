@@ -22,7 +22,7 @@ const HASH_C = "c".repeat(64);
 describe("LibraryStore", () => {
   it("reads an empty library before anything is written", async () => {
     const lib = await store.get();
-    expect(lib).toEqual({ characters: [], styles: [], trainedLoras: [] });
+    expect(lib).toEqual({ characters: [], styles: [], trainedLoras: [], scenes: [], series: [] });
   });
 
   it("upserts a character, stamping timestamps, then updates in place", async () => {
@@ -111,5 +111,32 @@ describe("LibraryStore", () => {
     );
     const lib = await store.get();
     expect(lib.characters).toHaveLength(12); // no lost updates under the mutex
+  });
+
+  it("upserts a scene then patches one field in place", async () => {
+    await store.upsertScene({ id: "s1", name: "Temple", sourceHash: HASH_A, status: "describing" } as never);
+    const ready = await store.patchScene("s1", {
+      status: "ready",
+      description: { caption: "a misty temple" } as never,
+    });
+    expect(ready?.status).toBe("ready");
+    expect(ready?.description?.caption).toBe("a misty temple");
+    expect(ready?.name).toBe("Temple"); // untouched field preserved
+  });
+
+  it("patchScene is a no-op for a missing id; removeScene drops it", async () => {
+    expect(await store.patchScene("gone", { status: "ready" } as never)).toBeUndefined();
+    await store.upsertScene({ id: "s2", sourceHash: HASH_B, status: "ready" } as never);
+    await store.removeScene("s2");
+    expect((await store.get()).scenes).toHaveLength(0);
+  });
+
+  it("upserts a series and patches it without clobbering other fields", async () => {
+    await store.upsertSeries({ id: "ser1", name: "Yue Tales", projectIds: ["p1"] } as never);
+    const patched = await store.patchSeries("ser1", { projectIds: ["p1", "p2"] });
+    expect(patched?.name).toBe("Yue Tales"); // preserved
+    expect(patched?.projectIds).toEqual(["p1", "p2"]);
+    await store.removeSeries("ser1");
+    expect((await store.get()).series).toHaveLength(0);
   });
 });
