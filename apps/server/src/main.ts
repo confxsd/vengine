@@ -14,6 +14,7 @@ import {
 import { createRuntime, modelManifest, nodeManifest } from "./runtime.js";
 import { registerComicRoutes } from "./comics.js";
 import { registerAssistRoutes } from "./assist.js";
+import { registerDraftRoutes } from "./draft.js";
 import { registerLibraryRoutes } from "./library.js";
 import { registerSceneRoutes } from "./scenes.js";
 
@@ -64,6 +65,9 @@ registerComicRoutes(app, rt, broadcast);
 
 // AI text assist: optimize/enrich/fix prompts and prose fields.
 registerAssistRoutes(app, rt);
+
+// Draft import: parse a free-form story draft into a reviewable storyboard.
+registerDraftRoutes(app, rt);
 
 // Cross-project Library (characters, style packs) + durable LoRA training.
 const training = registerLibraryRoutes(app, rt, broadcast);

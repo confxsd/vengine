@@ -36,8 +36,12 @@ export const TrainingStatus = {
   Ready: "ready",
   Failed: "failed",
 } as const;
-export type TrainingStatus = (typeof TrainingStatus)[keyof typeof TrainingStatus];
-const TRAINING_STATUS_VALUES = Object.values(TrainingStatus) as [TrainingStatus, ...TrainingStatus[]];
+export type TrainingStatus =
+  (typeof TrainingStatus)[keyof typeof TrainingStatus];
+const TRAINING_STATUS_VALUES = Object.values(TrainingStatus) as [
+  TrainingStatus,
+  ...TrainingStatus[],
+];
 
 /** What a LoRA teaches: an identity (subject) or a look (style). */
 export const LoraKind = {
@@ -157,7 +161,8 @@ export type StylePack = z.infer<typeof StylePackSchema>;
  * these once (then they're user-editable). Stable ids so re-seeding never duplicates.
  */
 export function builtinStylePacks(): StylePack[] {
-  const pack = (p: Partial<StylePack> & { id: string }) => StylePackSchema.parse({ builtIn: true, ...p });
+  const pack = (p: Partial<StylePack> & { id: string }) =>
+    StylePackSchema.parse({ builtIn: true, ...p });
   return [
     pack({
       id: "builtin-comic",
@@ -173,10 +178,11 @@ export function builtinStylePacks(): StylePack[] {
       id: "builtin-oil",
       name: "Oil Painting",
       theme:
-        "traditional oil painting, thick impasto, visible directional brushwork, rich canvas texture, luminous layered glazes, warm classical palette, painterly edges",
+        "traditional oil painting canvas, thick impasto, visible directional raw brush strokes, rich canvas texture, limited color palette, canvas texture",
       // Painterly looks want texture/marks — so NO "no marks" negative; only reject
       // the clean/synthetic looks that would flatten the medium.
-      negative: "photographic, 3d render, flat vector, smooth airbrush, plastic, low texture",
+      negative:
+        "photographic, 3d render, flat vector, smooth airbrush, plastic, low texture",
       width: 1024,
       height: 1280,
     }),
@@ -185,7 +191,8 @@ export function builtinStylePacks(): StylePack[] {
       name: "Ancient Chinese Ink",
       theme:
         "ancient Chinese ink wash painting (shuimo), expressive sumi brush strokes, generous negative space, subtle ink gradients, muted earth and stone tones, mythic atmospheric depth",
-      negative: "photographic, 3d render, neon, oversaturated, hard outlines, cluttered",
+      negative:
+        "photographic, 3d render, neon, oversaturated, hard outlines, cluttered",
       width: 896,
       height: 1280,
     }),
@@ -194,7 +201,8 @@ export function builtinStylePacks(): StylePack[] {
       name: "Watercolor",
       theme:
         "delicate watercolor painting, soft translucent washes, bleeding wet-on-wet pigments, visible paper grain, airy light palette",
-      negative: "photographic, 3d render, harsh outlines, heavy black, digital gradient",
+      negative:
+        "photographic, 3d render, harsh outlines, heavy black, digital gradient",
       width: 1024,
       height: 1280,
     }),
@@ -217,7 +225,13 @@ export type Library = z.infer<typeof LibrarySchema>;
 
 /** An empty library — the default when no document exists yet. */
 export function emptyLibrary(): Library {
-  return { characters: [], styles: [], trainedLoras: [], scenes: [], series: [] };
+  return {
+    characters: [],
+    styles: [],
+    trainedLoras: [],
+    scenes: [],
+    series: [],
+  };
 }
 
 /**
@@ -233,7 +247,10 @@ export interface TrainingProgressEvent {
 }
 
 /** Build a training WS event (one place that stamps `kind`). */
-export function trainingEvent(lora: TrainedLora, at: string): TrainingProgressEvent {
+export function trainingEvent(
+  lora: TrainedLora,
+  at: string,
+): TrainingProgressEvent {
   return { kind: WsEventKind.Training, lora, at };
 }
 

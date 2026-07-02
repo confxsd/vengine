@@ -12,6 +12,10 @@ import type {
   Series,
   StylePack,
   TrainedLora,
+  DraftParse,
+  DraftFrame,
+  DraftParseResponse,
+  DraftConfig,
   NodeProgressEvent,
   NodeRunStatus,
 } from "@vengine/shared";
@@ -32,6 +36,10 @@ export type {
   Series,
   StylePack,
   TrainedLora,
+  DraftParse,
+  DraftFrame,
+  DraftParseResponse,
+  DraftConfig,
 };
 
 /** Availability probe for scene description (mirrors `GET /api/scenes/config`). */

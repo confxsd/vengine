@@ -13,7 +13,7 @@ import {
   X,
   Zap,
 } from "lucide-react";
-import { TrainingStatus, type StylePack } from "@vengine/shared";
+import { MAX_REFS_PER_CHARACTER, leadRef, TrainingStatus, type StylePack } from "@vengine/shared";
 import { useLibrary } from "../libraryStore";
 import { useComic } from "../comicStore";
 import { api } from "../api";
@@ -209,14 +209,29 @@ function CharacterRow({
       </div>
 
       <div className="mt-2 flex flex-wrap items-center gap-1.5">
-        {character.refHashes.map((h) => (
-          <img
-            key={h}
-            src={api.thumbUrl(h)}
-            alt=""
-            className="h-11 w-11 rounded-md border border-border object-cover"
-          />
-        ))}
+        {character.refHashes.map((h, i) => {
+          // Only the first MAX_REFS_PER_CHARACTER refs are fed to generation; dim the
+          // rest as "backup" and let a click promote any of them into the active set.
+          const active = i < MAX_REFS_PER_CHARACTER;
+          return (
+            <button
+              key={h}
+              type="button"
+              onClick={() => void patchCharacter(character.id, { refHashes: leadRef(character.refHashes, h) })}
+              title={
+                active
+                  ? `Active reference #${i + 1} — fed to generation. Click to make it primary.`
+                  : "Backup reference — not fed to the model (only the first 2 are). Click to make it primary."
+              }
+              className={cn(
+                "h-11 w-11 overflow-hidden rounded-md border object-cover transition hover:border-accent",
+                active ? "border-border" : "border-dashed border-border/60 opacity-40 hover:opacity-100",
+              )}
+            >
+              <img src={api.thumbUrl(h)} alt="" className="h-full w-full object-cover" />
+            </button>
+          );
+        })}
         <button
           onClick={() => fileRef.current?.click()}
           className="flex h-11 w-11 items-center justify-center rounded-md border border-dashed border-border text-faint hover:border-accent/60 hover:text-muted"
@@ -242,6 +257,11 @@ function CharacterRow({
             e.target.value = "";
           }}
         />
+        {character.refHashes.length > MAX_REFS_PER_CHARACTER && (
+          <p className="w-full text-[11px] leading-snug text-faint">
+            Only the first {MAX_REFS_PER_CHARACTER} refs steer generation — click a dimmed one to promote it.
+          </p>
+        )}
       </div>
 
       <div className="mt-2 flex items-center gap-1.5">

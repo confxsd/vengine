@@ -19,6 +19,7 @@ import { useComic } from "../comicStore";
 import { api } from "../api";
 import { Button, Field, IconButton, Input, Select } from "../components/ui";
 import { AssistTextarea } from "./AssistTextarea";
+import { DraftImportButton } from "./DraftModal";
 import { cn } from "@/lib/cn";
 
 /** 9:16-ish vertical presets for single-drawing comics. */
@@ -359,11 +360,16 @@ export function ProjectHeader() {
     <div className="flex flex-col gap-5 p-4">
       {/* Story */}
       <section className="flex flex-col gap-2">
-        <h2 className="eyebrow">Story</h2>
+        <div className="flex items-center justify-between">
+          <h2 className="eyebrow">Story</h2>
+          <DraftImportButton />
+        </div>
         <Field label="Main story">
           <AssistTextarea
             field="story"
-            className="h-20"
+            resizable
+            expandable
+            editorTitle="Main story"
             placeholder="The overall narrative arc…"
             value={project.story}
             onValueChange={setStory}
@@ -373,7 +379,9 @@ export function ProjectHeader() {
         <Field label="Settings">
           <AssistTextarea
             field="settings"
-            className="h-16"
+            resizable
+            expandable
+            editorTitle="Settings"
             placeholder="World / setting shared by every frame…"
             value={project.settings}
             onValueChange={setSettings}
@@ -388,7 +396,9 @@ export function ProjectHeader() {
         <Field label="Style theme">
           <AssistTextarea
             field="styleTheme"
-            className="h-16"
+            resizable
+            expandable
+            editorTitle="Style theme"
             placeholder="e.g. muted ink wash, heavy grain, cinematic lighting"
             value={style.theme}
             onValueChange={(v) => patchStyle({ theme: v })}
@@ -632,7 +642,10 @@ export function ProjectHeader() {
             <Field label="Prompt template">
               <AssistTextarea
                 field="promptTemplate"
-                className="h-20 font-mono"
+                resizable
+                expandable
+                editorTitle="Prompt template"
+                className="font-mono"
                 value={project.promptTemplate}
                 onValueChange={setTemplate}
                 context={buildAssistContext(project, "promptTemplate")}
@@ -644,7 +657,9 @@ export function ProjectHeader() {
             <Field label="Negative prompt">
               <AssistTextarea
                 field="negativePrompt"
-                className="h-16"
+                resizable
+                expandable
+                editorTitle="Negative prompt"
                 value={style.negative}
                 onValueChange={(v) => patchStyle({ negative: v })}
                 context={buildAssistContext(project, "negativePrompt")}

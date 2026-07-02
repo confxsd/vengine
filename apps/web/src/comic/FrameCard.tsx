@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import {
   ArrowLeft,
   ArrowRight,
+  Camera,
   Check,
   ChevronDown,
   ChevronRight,
@@ -10,6 +11,7 @@ import {
   Library,
   Link2,
   Loader2,
+  MessageSquareText,
   Play,
   Star,
   Trash2,
@@ -22,13 +24,14 @@ import {
   frameImageHash,
   frameReferences,
   styleReferences,
+  CAMERA_PRESETS,
   type ComicFrame,
 } from "@vengine/shared";
 import { useComic } from "../comicStore";
 import { useStudio } from "../store";
 import { api } from "../api";
 import type { NodeRunStatus } from "../types";
-import { Card, IconButton, Input, Segmented, Select } from "../components/ui";
+import { Card, IconButton, Input, Segmented, Select, Textarea } from "../components/ui";
 import { AssistTextarea } from "./AssistTextarea";
 import { EditFrameModal } from "./EditFrameModal";
 import { cn } from "@/lib/cn";
@@ -405,6 +408,65 @@ export function FrameCard({ frame, index, total }: Props) {
         context={project ? buildAssistContext(project, "framePrompt", frame) : undefined}
       />
 
+      {/* Camera / shot framing — pick a preset or type a custom shot. Both write
+          `frame.camera`, which composes into the prompt as a `Camera:` directive.
+          The dropdown shows the current value when it matches a preset, else "Preset…"
+          (a custom phrase lives in the input below). */}
+      <div className="flex flex-col gap-1">
+        <div className="flex items-center gap-1.5">
+          <Camera className="h-3.5 w-3.5 shrink-0 text-faint" />
+          <Select
+            aria-label="Camera preset"
+            className="h-7 flex-1 text-[11px]"
+            value={CAMERA_PRESETS.some((p) => p.value === frame.camera) ? frame.camera : ""}
+            onChange={(e) => patchFrame(frame.id, { camera: e.target.value || undefined })}
+          >
+            <option value="">Camera preset…</option>
+            {CAMERA_PRESETS.map((p) => (
+              <option key={p.value} value={p.value}>
+                {p.label}
+              </option>
+            ))}
+          </Select>
+          {frame.camera && (
+            <button
+              type="button"
+              onClick={() => patchFrame(frame.id, { camera: undefined })}
+              title="Clear camera"
+              className="shrink-0 text-faint transition-colors hover:text-down"
+            >
+              <X className="h-3 w-3" />
+            </button>
+          )}
+        </div>
+        <Input
+          className="h-7 text-[11px]"
+          placeholder="or type a custom shot / angle…"
+          value={frame.camera ?? ""}
+          onChange={(e) => patchFrame(frame.id, { camera: e.target.value || undefined })}
+        />
+      </div>
+
+      {/* The beat's script (dialogue / narration), kept from a draft import. Metadata
+          only — never rendered into the image — so it lives in a collapsed disclosure. */}
+      {frame.script !== undefined && (
+        <details className="group/script rounded-md border border-border bg-elevated/30 px-2 py-1.5">
+          <summary className="flex cursor-pointer list-none items-center gap-1.5 text-[11px] text-faint transition-colors hover:text-muted">
+            <MessageSquareText className="h-3 w-3" />
+            Script
+            <span className="ml-auto text-[10px] text-faint/70 group-open/script:hidden">
+              {frame.script.trim().split("\n")[0]?.slice(0, 32) || "empty"}
+            </span>
+          </summary>
+          <Textarea
+            value={frame.script}
+            onChange={(e) => patchFrame(frame.id, { script: e.target.value })}
+            placeholder="Dialogue / narration for this beat (not drawn in the image)…"
+            className="mt-1.5 min-h-14 resize-y text-[11px] italic leading-snug"
+          />
+        </details>
+      )}
+
       {/* Which cast members appear in this frame (drives identity references). */}
       {cast.length > 0 && (
         <div className="flex flex-wrap gap-1">
@@ -648,17 +710,18 @@ export function FrameCard({ frame, index, total }: Props) {
         </pre>
       )}
 
-      {/* "Character sheet" shortcut: bank this frame's image as a character's ref. */}
+      {/* "Character sheet" shortcut: promote this frame's image to a character's
+          PRIMARY identity reference (leads the ref list, inside the model's cap). */}
       {frame.resultHash && cast.length > 0 && (
         <div className="flex flex-wrap items-center gap-1 text-[10px] text-faint">
-          <span>as ref →</span>
+          <span>as primary ref →</span>
           {cast.map((c, i) => (
             <button
               key={c.id}
               type="button"
               onClick={() => addCharacterRefFromFrame(c.id, frame.id)}
               className="rounded bg-elevated px-1.5 py-0.5 transition-colors hover:text-accent"
-              title={`Use this image as a reference for ${charLabel(c, i)}`}
+              title={`Make this image the leading identity reference for ${charLabel(c, i)}`}
             >
               {charLabel(c, i)}
             </button>

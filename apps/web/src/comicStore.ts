@@ -3,6 +3,7 @@ import { toast } from "sonner";
 import {
   composeFramePrompt,
   frameIdFromNodeId,
+  leadRef,
   styleReferences,
   DEFAULT_REFERENCE_WEIGHT,
   type ComicCharacter,
@@ -12,6 +13,7 @@ import {
   type ComicReference,
   type ComicStyle,
   type ComicVariant,
+  type DraftParse,
 } from "@vengine/shared";
 import { api, connectProgress } from "./api";
 import type { ModelInfo, NodeProgressEvent, NodeRunStatus, ProjectSummary, RunPlan } from "./types";
@@ -23,6 +25,14 @@ const newCharId = () => crypto.randomUUID().slice(0, 8);
 const randomSeed = () => Math.floor(Math.random() * 1_000_000);
 
 type SaveState = "idle" | "saving" | "saved" | "error";
+
+/** How a parsed draft is written into the current project. */
+export interface ApplyDraftOptions {
+  /** Replace all existing frames (true) or append the parsed beats after them (false). */
+  replaceFrames: boolean;
+  /** Overwrite the project's story/settings with the parsed values (when non-empty). */
+  applyStory: boolean;
+}
 
 /** Inputs for an in-place frame edit (mirrors the server's EditBody, minus quality). */
 export interface EditFrameInput {
@@ -39,6 +49,8 @@ interface ComicState {
   models: ModelInfo[];
   /** Whether the server has a text model + API key wired (gates the AI buttons). */
   assistAvailable: boolean;
+  /** Whether draft import is usable (same text model + key; gates the draft button). */
+  draftAvailable: boolean;
   quality: "preview" | "final";
   /** True while any frame is generating (derived: `inFlight.length > 0`). */
   running: boolean;
@@ -69,6 +81,12 @@ interface ComicState {
   addFrame: () => void;
   /** Append a frame seeded with a prompt (e.g. from a saved scene's caption). */
   addFrameFromScene: (prompt: string) => void;
+  /**
+   * Apply a parsed draft: optionally set story/settings, then append or replace the
+   * project's frames with the parsed beats (mapping character names onto existing
+   * cast). The single write-back for the draft-import flow.
+   */
+  applyDraft: (parse: DraftParse, opts: ApplyDraftOptions) => void;
   removeFrame: (id: string) => void;
   /** Delete one generated image from a frame's history (server-authoritative). */
   removeVariant: (frameId: string, hash: string) => Promise<void>;
@@ -411,6 +429,7 @@ export const useComic = create<ComicState>((set, get) => {
     project: null,
     models: [],
     assistAvailable: false,
+    draftAvailable: false,
     quality: "final",
     running: false,
     inFlight: [],
@@ -439,10 +458,16 @@ export const useComic = create<ComicState>((set, get) => {
       // Single WS subscription for the app lifetime (re-entry is blocked above).
       progressUnsub?.();
       progressUnsub = connectProgress(applyProgress);
-      // Probe AI assist availability (non-fatal: button just stays hidden if off).
+      // Probe AI assist + draft-import availability (both non-fatal: the controls
+      // just stay hidden if off). They share the text model, but probe separately so
+      // each stays correct if the routes ever diverge.
       api
         .assistConfig()
         .then((cfg) => set({ assistAvailable: cfg.available }))
+        .catch(() => undefined);
+      api
+        .draftConfig()
+        .then((cfg) => set({ draftAvailable: cfg.available }))
         .catch(() => undefined);
     },
 
@@ -473,6 +498,38 @@ export const useComic = create<ComicState>((set, get) => {
         ...p,
         frames: [...p.frames, { id: newFrameId(), prompt, variants: [], refHashes: [] }],
       })),
+    applyDraft: (parse, opts) =>
+      mutate((p) => {
+        // Map each parsed beat's character names onto existing cast (case-insensitive).
+        // If none of a frame's names match, leave characterIds undefined (= whole cast),
+        // so a draft with no matching cast still behaves like a hand-added frame.
+        const byName = new Map(
+          p.cast.map((c) => [c.name.trim().toLowerCase(), c.id] as const).filter(([n]) => n),
+        );
+        const newFrames: ComicFrame[] = parse.frames.map((f) => {
+          const ids = [
+            ...new Set(
+              f.characters.map((n) => byName.get(n.trim().toLowerCase())).filter((id): id is string => !!id),
+            ),
+          ];
+          return {
+            id: newFrameId(),
+            prompt: f.prompt,
+            variants: [],
+            refHashes: [],
+            ...(f.script.trim() ? { script: f.script } : {}),
+            ...(ids.length ? { characterIds: ids } : {}),
+          };
+        });
+        const story = opts.applyStory && parse.story.trim() ? parse.story : p.story;
+        const settings = opts.applyStory && parse.settings.trim() ? parse.settings : p.settings;
+        return {
+          ...p,
+          story,
+          settings,
+          frames: opts.replaceFrames ? newFrames : [...p.frames, ...newFrames],
+        };
+      }),
     // Drop the frame and clear any continuation links pointing at it, so no frame
     // is left referencing a deleted scene (compile ignores unknown ids regardless).
     removeFrame: (id) => {
@@ -685,23 +742,27 @@ export const useComic = create<ComicState>((set, get) => {
       const char = get().project?.cast.find((c) => c.id === charId);
       if (!hash || !char) return;
       mutate((p) => bankAsset(p, hash)); // banked frame outputs join the library too
-      if (char.refHashes.includes(hash)) {
-        toast("Already a reference for this character");
-        return;
-      }
-      get().patchCharacter(charId, { refHashes: [...char.refHashes, hash] });
-      toast.success(`Reference added to ${char.name.trim() || "character"}`);
+      const already = char.refHashes.includes(hash);
+      // Lead the ref list: only the first MAX_REFS_PER_CHARACTER refs are fed to any
+      // frame (earlier = higher weight), so a deliberately-promoted image must go to
+      // the FRONT — appending it past the cap would silently do nothing.
+      get().patchCharacter(charId, { refHashes: leadRef(char.refHashes, hash) });
+      const who = char.name.trim() || "character";
+      toast.success(
+        already ? `Now the primary reference for ${who}` : `Set as primary reference for ${who}`,
+      );
     },
 
     addCharacterRefFromLibrary: (charId, hash) => {
       const char = get().project?.cast.find((c) => c.id === charId);
       if (!char) return;
-      if (char.refHashes.includes(hash)) {
-        toast("Already a reference for this character");
-        return;
-      }
-      get().patchCharacter(charId, { refHashes: [...char.refHashes, hash] });
-      toast.success(`Reference added to ${char.name.trim() || "character"}`);
+      const already = char.refHashes.includes(hash);
+      // Same as above: attach at the front so it's inside the reference cap.
+      get().patchCharacter(charId, { refHashes: leadRef(char.refHashes, hash) });
+      const who = char.name.trim() || "character";
+      toast.success(
+        already ? `Now the primary reference for ${who}` : `Set as primary reference for ${who}`,
+      );
     },
 
     removeCharacterRef: (charId, hash) => {

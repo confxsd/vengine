@@ -126,12 +126,36 @@ export const ComicFrameSchema = z.object({
    *   "compose" → references define character identity, wardrobe, palette and art
    *               STYLE only; the prompt fully drives camera, layout and posing
    *               (the industry-standard default — consistent look, free composition).
-   *   "match"   → also reproduce the reference's composition/camera (copy a layout).
+   *   "match"   → also reproduce the reference's composition/camera (copy a layout /
+   *               pose reference). When the frame's own ref is joined by cast/style
+   *               sheets, the directive names the FIRST attached image (the frame's
+   *               own ref leads the order) as the composition source and the rest as
+   *               identity sheets, so a pose ref steers layout without bleeding into
+   *               likeness.
    * Undefined defaults to "compose" (`DEFAULT_REFERENCE_MODE`). Inert when the frame
    * feeds no identity references, and ignored when the frame is a continuation (the
    * continuity link governs composition via `continuesMode` instead).
    */
   referenceMode: z.enum(["compose", "match"]).optional(),
+  /**
+   * Camera / shot framing for this drawing — a short phrase (e.g. "low-angle shot
+   * looking up", "extreme close-up") set from the `CAMERA_PRESETS` dropdown or typed
+   * freely. Composed into the frame's prompt as a dedicated `Camera:` directive (see
+   * `cameraDirective` / `composeFramePrompt`), so it steers composition without the
+   * author having to hand-write shot language into every scene. Empty/undefined = the
+   * prompt fully owns the camera (unchanged behaviour). Optional: existing frames need
+   * no migration.
+   */
+  camera: z.string().optional(),
+  /**
+   * The author's script for this beat — its dialogue, inner-voice or narration,
+   * preserved as metadata (usually captured when a free-form draft is imported; see
+   * `draft.ts`). Purely a writing aid: comics render **no text in the image**, so this
+   * is NEVER composed into the generation prompt — it just travels with the frame so
+   * the story text isn't lost. Optional, so existing frames and the "add blank frame"
+   * path need no migration.
+   */
+  script: z.string().optional(),
   /** The currently selected/displayed image (a hash from `variants`). The artist
    *  picks it; a run sets it to the freshest generation. */
   resultHash: z.string().length(64).optional(),
@@ -169,6 +193,17 @@ export const DEFAULT_REFERENCE_WEIGHT = 1;
  * are ordered strongest-first) keeps each character's identity locked while leaving
  * room for the rest of the cast, continuity and style. */
 export const MAX_REFS_PER_CHARACTER = 2;
+
+/**
+ * Move `hash` to the front of a character's `refHashes` (dedup, order preserved for
+ * the rest). Earlier refs weight higher and only the first `MAX_REFS_PER_CHARACTER`
+ * are ever fed to a frame, so a *deliberately promoted* image (from a frame or the
+ * library) must lead — appending it would drop it past the cap where the model never
+ * sees it, silently making the promote a no-op. Returns a new array.
+ */
+export function leadRef(refHashes: readonly string[], hash: string): string[] {
+  return [hash, ...refHashes.filter((h) => h !== hash)];
+}
 
 /** Influence weight of a scene-continuity reference. Full strength by design: a
  *  continuation must lock the prior scene hard, so it leads at maximum weight. */
@@ -228,10 +263,17 @@ export const DEFAULT_REFERENCE_MODE: ReferenceMode = "compose";
  * generating the same image"). Returned as a trailing directive so the frame's own
  * description still leads.
  */
-export function referenceDirective(mode: ReferenceMode): string {
-  return mode === "match"
-    ? "Reference images: reproduce the composition, camera angle and layout of the reference image(s), changing only what the description above specifies."
-    : "Reference images: use the attached images for CHARACTER IDENTITY (faces, bodies, wardrobe), COLOR PALETTE and ART STYLE only. Do NOT copy their composition, camera angle, cropping, poses or layout — build an entirely new image with the composition, camera, staging and posing described above.";
+export function referenceDirective(mode: ReferenceMode, hasIdentitySheets = false): string {
+  if (mode !== "match") {
+    return "Reference images: use the attached images for CHARACTER IDENTITY (faces, bodies, wardrobe), COLOR PALETTE and ART STYLE only. Do NOT copy their composition, camera angle, cropping, poses or layout — build an entirely new image with the composition, camera, staging and posing described above.";
+  }
+  // With cast/style sheets alongside the frame's own layout ref, the model must know
+  // WHICH image carries the composition — otherwise it may match a character sheet's
+  // layout, or take likeness from the layout ref. Frame-own refs lead the reference
+  // order (see `identityReferences`), so "the FIRST attached image" is the layout ref.
+  return hasIdentitySheets
+    ? "Reference images: the FIRST attached image is the COMPOSITION reference — reproduce its composition, camera angle, framing and the pose/blocking of each figure, changing only what the description above specifies. The remaining attached images are the character and style reference sheets: take each character's identity — face, body, proportions, wardrobe — and the art style from their own sheet, NOT from the composition reference."
+    : "Reference images: reproduce the composition, camera angle and layout of the reference image(s), changing only what the description above specifies.";
 }
 
 /** A frame's current still image: the selected result, else its newest variant. */
@@ -356,6 +398,41 @@ export function paletteDirective(palette: string[] | undefined): string {
   return `Color palette: render using only this limited palette — ${colors.join(", ")}.`;
 }
 
+/** A ready-to-use camera preset: the human `label` shown in the dropdown and the
+ *  prompt-ready `value` fed into `frame.camera`. Grouped angle → distance, coarse to
+ *  fine, matching how a shot is usually called. Free text is still allowed, so the
+ *  list stays short and common rather than exhaustive. */
+export interface CameraPreset {
+  label: string;
+  value: string;
+}
+export const CAMERA_PRESETS: CameraPreset[] = [
+  // Angle
+  { label: "Eye-level", value: "eye-level shot" },
+  { label: "Low angle (looking up)", value: "low-angle shot looking up" },
+  { label: "High angle (looking down)", value: "high-angle shot looking down" },
+  { label: "Bird's-eye (top-down)", value: "bird's-eye view, directly top-down" },
+  { label: "Worm's-eye", value: "worm's-eye view from ground level" },
+  { label: "Dutch angle (tilted)", value: "dutch angle, tilted horizon" },
+  { label: "Over-the-shoulder", value: "over-the-shoulder shot" },
+  { label: "Point-of-view (POV)", value: "first-person point-of-view shot" },
+  // Distance / shot size
+  { label: "Establishing (extreme wide)", value: "extreme wide establishing shot" },
+  { label: "Wide shot", value: "wide shot" },
+  { label: "Full shot (full body)", value: "full shot, full body in frame" },
+  { label: "Medium shot (waist up)", value: "medium shot, waist up" },
+  { label: "Close-up", value: "close-up" },
+  { label: "Extreme close-up", value: "extreme close-up" },
+];
+
+/** The per-frame camera/shot directive appended to a frame's prompt. Trailing period
+ *  is normalised so a preset and a hand-typed phrase read identically. Empty → "". */
+export function cameraDirective(camera: string | undefined): string {
+  const c = (camera ?? "").trim().replace(/\.+$/, "");
+  if (!c) return "";
+  return `Camera: ${c}.`;
+}
+
 /**
  * Substitute the template tokens for one frame. This is the "engineered context":
  * deterministic, previewable, and identical to what the compiler bakes into the
@@ -381,11 +458,16 @@ export function composeFramePrompt(project: ComicProject, frame: ComicFrame): st
     .filter((l) => !/^\s*\p{L}[\p{L} ]*:\s*$/u.test(l));
   const baseText = kept.join("\n").replace(/\n{3,}/g, "\n\n").trim();
 
+  // Append this frame's camera/shot framing (if set) right after the scene, so the
+  // composition directive sits with the subject it frames. Empty → unchanged prompt.
+  const camera = cameraDirective(frame.camera);
+  const withCamera = camera ? (baseText ? `${baseText}\n\n${camera}` : camera) : baseText;
+
   // Fold in the fixed palette (if any) as a trailing style directive, before the
   // reference directive, so it applies to every frame regardless of the template and
   // old projects (no `{palette}` token needed). Empty palette → unchanged prompt.
   const palette = paletteDirective(project.style.palette);
-  const base = palette ? (baseText ? `${baseText}\n\n${palette}` : palette) : baseText;
+  const base = palette ? (withCamera ? `${withCamera}\n\n${palette}` : palette) : withCamera;
 
   // Append exactly one "how to use the reference images" directive, so an edit-capable
   // model knows whether a supplied image is a scene to continue, a layout to copy, or
@@ -402,8 +484,20 @@ export function composeFramePrompt(project: ComicProject, frame: ComicFrame): st
     // sheet, not from how the character was posed in the previous panel.
     const hasIdentityRefs = identityReferences(project, frame).length > 0;
     directive = continuityDirective(frame.continuesMode ?? DEFAULT_CONTINUES_MODE, hasIdentityRefs);
-  } else if (identityReferences(project, frame).length > 0) {
-    directive = referenceDirective(frame.referenceMode ?? DEFAULT_REFERENCE_MODE);
+  } else {
+    const idRefs = identityReferences(project, frame);
+    if (idRefs.length > 0) {
+      // "match" needs to know whether the frame's own layout ref (fed first) is
+      // accompanied by cast/style sheets, so the directive can name which image
+      // carries the composition and which carry identity.
+      const ownHashes = new Set(frame.refHashes);
+      const hasIdentitySheets =
+        frame.refHashes.length > 0 && idRefs.some((r) => !ownHashes.has(r.hash));
+      directive = referenceDirective(
+        frame.referenceMode ?? DEFAULT_REFERENCE_MODE,
+        hasIdentitySheets,
+      );
+    }
   }
   if (!directive) return base;
   return base ? `${base}\n\n${directive}` : directive;

@@ -3,6 +3,8 @@ import type {
   AssistConfig,
   AssistRequest,
   AssistResponse,
+  DraftConfig,
+  DraftParseResponse,
   ComicProject,
   GraphDocument,
   Library,
@@ -110,6 +112,10 @@ export const api = {
   // ── AI text assist ──────────────────────────────────────────────────────────
   assistConfig: () => fetch("/api/assist/config").then(json<AssistConfig>),
   assist: (req: AssistRequest) => post<AssistResponse>("/api/assist", req),
+
+  // ── Draft import ──────────────────────────────────────────────────────────────
+  draftConfig: () => fetch("/api/draft/config").then(json<DraftConfig>),
+  parseDraft: (text: string) => post<DraftParseResponse>("/api/draft/parse", { text }),
 
   // ── Cross-project Library ─────────────────────────────────────────────────────
   library: () => fetch("/api/library").then(json<Library>),

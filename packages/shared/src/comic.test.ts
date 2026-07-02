@@ -17,7 +17,9 @@ import {
   continuityDirective,
   referenceDirective,
   paletteDirective,
+  cameraDirective,
   identityReferences,
+  leadRef,
   styleReferences,
   MAX_REFS_PER_CHARACTER,
   MAX_VARIANTS,
@@ -113,6 +115,44 @@ describe("composeFramePrompt", () => {
     expect(paletteAt).toBeGreaterThan(-1);
     expect(refAt).toBeGreaterThan(-1);
     expect(paletteAt).toBeLessThan(refAt);
+  });
+
+  it("normalises the camera directive (trailing period, whitespace)", () => {
+    expect(cameraDirective(undefined)).toBe("");
+    expect(cameraDirective("  ")).toBe("");
+    expect(cameraDirective("close-up")).toBe("Camera: close-up.");
+    // A hand-typed phrase with its own period reads identically to a preset.
+    expect(cameraDirective("dutch angle.")).toBe("Camera: dutch angle.");
+  });
+
+  it("appends a camera directive when the frame sets one, after the scene", () => {
+    const p = project({
+      frames: [{ id: "a", prompt: "a lone figure under a flickering streetlight", camera: "low-angle shot looking up" }],
+    });
+    const out = composeFramePrompt(p, p.frames[0]!);
+    expect(out).toContain("Camera: low-angle shot looking up.");
+    // Sits after the scene text, before the setting/style block is irrelevant to order
+    // here; assert it trails the subject.
+    expect(out.indexOf("Camera:")).toBeGreaterThan(out.indexOf("a lone figure"));
+  });
+
+  it("emits no camera directive for an empty/whitespace or unset camera", () => {
+    const none = project();
+    expect(composeFramePrompt(none, none.frames[0]!)).not.toMatch(/Camera:/);
+    const blank = project({ frames: [{ id: "a", prompt: "x", camera: "   " }] });
+    expect(composeFramePrompt(blank, blank.frames[0]!)).not.toMatch(/Camera:/);
+  });
+
+  it("places the camera directive before the palette", () => {
+    const p = project({
+      style: { theme: "oil", model: "mock/gradient", seed: 1, palette: ["#123456"] },
+      frames: [{ id: "a", prompt: "a plaza", camera: "wide shot" }],
+    });
+    const out = composeFramePrompt(p, p.frames[0]!);
+    const cameraAt = out.indexOf("Camera:");
+    const paletteAt = out.indexOf("Color palette:");
+    expect(cameraAt).toBeGreaterThan(-1);
+    expect(paletteAt).toBeGreaterThan(cameraAt);
   });
 
   it("appends the re-stage continuity directive by default for a continued frame", () => {
@@ -495,6 +535,34 @@ describe("reference mode (composition vs identity)", () => {
     expect(referenceDirective("match")).not.toBe(referenceDirective("compose"));
   });
 
+  it("'match' names the FIRST image as composition source when a pose ref rides with cast/style sheets", () => {
+    const pose = "d".repeat(64);
+    const hero = "c".repeat(64);
+    const p = project({
+      style: { ...project().style, anchors: [{ hash: anchor, weight: 1 }] },
+      cast: [{ id: "hero", name: "Hero", refHashes: [hero] }],
+      frames: [{ id: "a", prompt: "x", refHashes: [pose], referenceMode: "match" }],
+    });
+    const out = composeFramePrompt(p, p.frames[0]!);
+    expect(out).toContain(referenceDirective("match", true));
+    expect(out).not.toContain(referenceDirective("match", false));
+    // The frame's own ref leads the fed order, so "FIRST" points at the pose ref…
+    expect(identityReferences(p, p.frames[0]!)[0]!.hash).toBe(pose);
+    // …and the directive splits the roles: first = layout, rest = identity sheets.
+    expect(referenceDirective("match", true)).toContain("FIRST attached image");
+    expect(referenceDirective("match", true)).toContain("NOT from the composition reference");
+  });
+
+  it("'match' keeps the generic directive when the frame has no own layout ref", () => {
+    const p = project({
+      style: { ...project().style, anchors: [{ hash: anchor, weight: 1 }] },
+      frames: [{ id: "a", prompt: "x", referenceMode: "match" }],
+    });
+    const out = composeFramePrompt(p, p.frames[0]!);
+    expect(out).toContain(referenceDirective("match", false));
+    expect(out).not.toContain("FIRST attached image");
+  });
+
   it("emits NO reference directive when the frame feeds no identity references", () => {
     const p = project(); // no anchors, no cast, no per-frame refs
     const out = composeFramePrompt(p, p.frames[0]!);
@@ -552,6 +620,19 @@ describe("reference mode (composition vs identity)", () => {
       frames: [{ id: "a", prompt: "x" }],
     });
     expect(identityReferences(two, two.frames[0]!)).toHaveLength(2 * MAX_REFS_PER_CHARACTER);
+  });
+
+  it("leadRef promotes a hash to the front so it lands inside the reference cap", () => {
+    const a = "a".repeat(64), b = "b".repeat(64), c = "c".repeat(64);
+    // A brand-new promote leads (highest weight, within the cap).
+    expect(leadRef([a, b], c)).toEqual([c, a, b]);
+    // Promoting an existing backup ref (index ≥ cap) moves it into the fed window
+    // instead of leaving it stranded past the slice — no duplication.
+    const promoted = leadRef([a, b, c], c);
+    expect(promoted).toEqual([c, a, b]);
+    expect(promoted.slice(0, MAX_REFS_PER_CHARACTER)).toContain(c);
+    // Idempotent on the already-leading ref.
+    expect(leadRef([a, b], a)).toEqual([a, b]);
   });
 });
 

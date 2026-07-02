@@ -445,7 +445,11 @@ carry an intent — `frame.referenceMode` (`ReferenceMode`, default **`"compose"
 — that `composeFramePrompt` lowers into a trailing **reference directive** (`referenceDirective`):
 `"compose"` (the industry-standard default — character LoRA / IP-Adapter / `--cref` semantics) tells the
 model to use the refs for **identity, wardrobe, palette and art style only** and build a new composition
-from the prompt; `"match"` reproduces the reference's composition/camera (copy a layout). Exactly **one**
+from the prompt; `"match"` reproduces the reference's composition/camera (copy a layout — this is the mode
+for a **pose reference**). When the matched frame also feeds cast/style sheets, the match directive names
+the **FIRST attached image** (the frame's own ref, which leads the fed order) as the composition source and
+the rest as identity sheets — so a pose ref steers layout without a character sheet's layout being copied
+or the mannequin's look bleeding into likeness. Exactly **one**
 composition directive is emitted per frame: a resolved continuity link wins (its `continuesMode` governs),
 else the reference directive fires when `identityReferences` is non-empty — so preview/compile/run stay
 identical and a frame never carries two conflicting directives. The UI exposes it as a per-frame
@@ -454,7 +458,12 @@ continuation. A fourth lever is **per-frame reference images**
 (`frame.refHashes[]`, `frameOwnReferences`): images attached to **one frame only** — composition/look
 guidance for that single panel, independent of the project-wide style anchors and the shared cast. Drawn
 from the same reusable library (upload or attach an existing entry), full weight, fed only when that frame
-generates; removing a library entry detaches them too. Per
+generates; removing a library entry detaches them too. A fifth lever is **camera framing**
+(`frame.camera`): a short shot phrase set from the `CAMERA_PRESETS` dropdown (angle → distance) or typed
+freely in `FrameCard`, composed by `composeFramePrompt` as a trailing `Camera:` directive
+(`cameraDirective`, placed right after the scene, before palette) so composition is steerable without
+hand-writing shot language into every prompt. Empty/undefined = the prompt owns the camera (unchanged).
+Optional field, no migration. Per
 frame, `frameReferences` (`packages/shared/src/comic.ts`) resolves the ordered, deduped, **weighted** set
 — the continuity reference first (full weight, so it dominates), then the **identity/style** set
 (`identityReferences`: the frame's own refs, then style anchors, then each active cast member's refs at full
@@ -614,3 +623,32 @@ other modes). Callers swap `value`/`onChange` for `value`/`onValueChange`, which
 edits and AI revisions (so the normal debounced autosave persists them). The button is gated on
 `assistAvailable` (probed once in `comicStore.init`), shows a spinner per in-flight mode, and toasts on
 error. Wired into all prose fields in `ProjectHeader` and the per-frame prompt in `FrameCard`.
+
+## 18. Draft Import (implemented)
+
+The front door for authors who write a story as free prose (frame markers, `(parenthetical)` scene
+directions, dialogue/inner-voice) and don't want to hand-split it into frames. The same text model as
+Assist reads the whole draft into a structured, **reviewable** storyboard.
+
+**Shared contract.** `packages/shared/src/draft.ts` defines `DraftParse` (`title`, `story`, `settings`,
+`frames[]`) where each `DraftFrame` = `{ prompt, script, characters }`. `prompt` is a prompt-ready
+**visual** description of one 9:16 drawing; `script` is that beat's original dialogue/narration kept as
+metadata (comics render **no text in the image**, so it is never composed into a prompt); `characters`
+are names for cast mapping. Also `DraftParseRequest`/`DraftConfig` and `DRAFT_MAX_INPUT`. A new optional
+`ComicFrame.script` field carries the beat's script onto the frame (additive, no migration; ignored by
+`composeFramePrompt`).
+
+**Server.** `apps/server/src/draft.ts` (`registerDraftRoutes`) mirrors the assist/scene routes: a
+config-driven system prompt tells the model to translate what characters *say/feel* into what is
+*visible* and emit strict JSON. `parseDraftReply` extracts JSON leniently (strip fences → first balanced
+`{…}` → schema defaults fill gaps → raw-text-as-story fallback). Runs at `temperature 0.3` so structure
+is faithful. Routes: `POST /api/draft/parse` (never mutates a project — returns the parse for review)
+and `GET /api/draft/config` (availability probe). Registered in `main.ts`.
+
+**UI/flow.** `DraftModal` (`apps/web/src/comic/DraftModal.tsx`) is paste → **Parse** → review (edit each
+prompt, see the script, remove beats, toggle story/settings + append-vs-replace) → **Add to comic**.
+Applying calls `comicStore.applyDraft(parse, opts)`, the single write-back: it maps each beat's character
+names onto existing cast (case-insensitive → `characterIds`), carries non-empty `script` onto the frame,
+and appends or replaces frames. Gated on `draftAvailable` (probed in `init`); entry is the **Import draft**
+button in `ProjectHeader`'s Story header. Imported `script` shows as a collapsed disclosure under the
+prompt in `FrameCard`.
