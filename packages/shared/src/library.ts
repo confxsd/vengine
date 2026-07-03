@@ -7,6 +7,7 @@ import {
   DEFAULT_WIDTH,
 } from "./comic.js";
 import { SceneReferenceSchema, SeriesSchema } from "./scene.js";
+import { CharacterStudySchema } from "./study.js";
 
 /**
  * The **cross-project library**: durable creative assets that outlive any single
@@ -120,6 +121,14 @@ export const LibraryCharacterSchema = z.object({
   palette: z.array(z.string()).default([]),
   /** Optional trained subject LoRA for this character (id into `Library.trainedLoras`). */
   loraId: z.string().optional(),
+  /**
+   * The character's **reference system** — categorised design studies (poses,
+   * expressions, turnarounds, wardrobe, symbols, compositions, props) built in the
+   * Character System studio. Defaulted so pre-existing characters load unchanged.
+   * Generation outputs inside are server-authoritative: `mergeStudies` protects
+   * them on every whole-record upsert (see study.ts).
+   */
+  studies: z.array(CharacterStudySchema).default([]),
   tags: z.array(z.string()).default([]),
   createdAt: isoString.optional(),
   updatedAt: isoString.optional(),

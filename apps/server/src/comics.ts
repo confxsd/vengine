@@ -52,10 +52,17 @@ const EditBody = z.object({
   quality: z.enum(["preview", "final"]).optional(),
 });
 
-/** Mount the Comic Studio routes onto the main Hono app. */
-export function registerComicRoutes(app: Hono, rt: Runtime, broadcast: Broadcast): void {
-  /** In-flight runs, so a client can cancel one by runId (stops paid spend). */
-  const runs = new Map<string, AbortController>();
+/**
+ * Mount the Comic Studio routes onto the main Hono app. `runs` is the app-wide
+ * in-flight run registry (shared with the study routes), so a client can cancel
+ * ANY generation by runId through the single cancel endpoint mounted here.
+ */
+export function registerComicRoutes(
+  app: Hono,
+  rt: Runtime,
+  broadcast: Broadcast,
+  runs: Map<string, AbortController>,
+): void {
 
   // List projects (for the switcher).
   app.get("/api/comics", async (c) => c.json(await rt.projects.list()));

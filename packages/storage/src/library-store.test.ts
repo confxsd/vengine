@@ -131,6 +131,40 @@ describe("LibraryStore", () => {
     expect((await store.get()).scenes).toHaveLength(0);
   });
 
+  it("study write-backs survive a stale whole-character upsert", async () => {
+    const created = await store.upsertCharacter({ id: "yue", name: "Yue" } as never);
+    await store.upsertStudy("yue", { id: "st1", category: "pose", prompt: "leap" } as never);
+    // A run lands a variant server-side…
+    await store.appendStudyVariants("yue", "st1", [{ hash: HASH_A, seed: 7 }]);
+    // …then a client PUT arrives carrying the pre-run snapshot (no studies at all).
+    const saved = await store.upsertCharacter({ ...created, name: "Yue (renamed)" });
+    expect(saved.name).toBe("Yue (renamed)");
+    expect(saved.studies).toHaveLength(1); // the study wasn't dropped
+    expect(saved.studies[0]!.variants.map((v) => v.hash)).toEqual([HASH_A]);
+    expect(saved.studies[0]!.resultHash).toBe(HASH_A);
+  });
+
+  it("updateStudy patches in place; removeStudy / removeStudyVariant clean up", async () => {
+    await store.upsertCharacter({ id: "yue", name: "Yue" } as never);
+    await store.upsertStudy("yue", { id: "st1", category: "pose", prompt: "leap" } as never);
+    await store.appendStudyVariants("yue", "st1", [
+      { hash: HASH_A, seed: 1 },
+      { hash: HASH_B, seed: 2 },
+    ]);
+
+    const starred = await store.updateStudy("yue", "st1", (s) => ({ ...s, starred: true }));
+    expect(starred?.studies[0]!.starred).toBe(true);
+
+    // Deleting the selected variant falls back to the newest remaining.
+    const afterDrop = await store.removeStudyVariant("yue", "st1", HASH_B);
+    expect(afterDrop?.studies[0]!.variants.map((v) => v.hash)).toEqual([HASH_A]);
+    expect(afterDrop?.studies[0]!.resultHash).toBe(HASH_A);
+
+    const afterRemove = await store.removeStudy("yue", "st1");
+    expect(afterRemove?.studies).toHaveLength(0);
+    expect(await store.updateStudy("yue", "ghost", (s) => s)).toBeUndefined();
+  });
+
   it("upserts a series and patches it without clobbering other fields", async () => {
     await store.upsertSeries({ id: "ser1", name: "Yue Tales", projectIds: ["p1"] } as never);
     const patched = await store.patchSeries("ser1", { projectIds: ["p1", "p2"] });

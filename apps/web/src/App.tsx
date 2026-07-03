@@ -9,6 +9,8 @@ import { ComicStudio } from "./comic/ComicStudio";
 // bundle, while Library/Scenes/Series/Settings stream in on first visit.
 const LibraryPage = lazy(() => import("./routes/LibraryPage"));
 const CharacterDetailPage = lazy(() => import("./routes/CharacterDetailPage"));
+const CharacterSystemPage = lazy(() => import("./routes/CharacterSystemPage"));
+const SystemRedirect = lazy(() => import("./routes/SystemRedirect"));
 const ScenesPage = lazy(() => import("./routes/ScenesPage"));
 const SeriesPage = lazy(() => import("./routes/SeriesPage"));
 const SettingsPage = lazy(() => import("./routes/SettingsPage"));
@@ -29,6 +31,9 @@ export default function App() {
         <Route path="canvas" element={<CanvasPage />} />
         <Route path="library" element={<LibraryPage />} />
         <Route path="library/characters/:id" element={<CharacterDetailPage />} />
+        {/* /system resolves to the last-visited character's System page. */}
+        <Route path="system" element={<SystemRedirect />} />
+        <Route path="system/:id" element={<CharacterSystemPage />} />
         <Route path="scenes" element={<ScenesPage />} />
         <Route path="series" element={<SeriesPage />} />
         <Route path="settings" element={<SettingsPage />} />

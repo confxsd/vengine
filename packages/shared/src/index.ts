@@ -5,5 +5,6 @@ export * from "./run.js";
 export * from "./comic.js";
 export * from "./scene.js";
 export * from "./library.js";
+export * from "./study.js";
 export * from "./assist.js";
 export * from "./draft.js";

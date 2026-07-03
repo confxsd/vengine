@@ -5,6 +5,9 @@ import { randomUUID } from "node:crypto";
 import {
   LibrarySchema,
   emptyLibrary,
+  mergeStudies,
+  unionVariants,
+  type CharacterStudy,
   type Library,
   type LibraryCharacter,
   type StylePack,
@@ -80,14 +83,28 @@ export class LibraryStore {
 
   // --- Characters ---------------------------------------------------------
 
-  /** Insert or replace a character by id, stamping timestamps. Returns the saved entry. */
+  /**
+   * Insert or replace a character by id, stamping timestamps. Study generation
+   * outputs are server-authoritative, so the incoming record's `studies` are
+   * merge-protected against the stored ones (see `mergeStudies`) — a client PUT
+   * carrying a stale snapshot can never drop a study or a variant that landed
+   * mid-flight. Returns the saved entry.
+   */
   async upsertCharacter(c: LibraryCharacter): Promise<LibraryCharacter> {
     const now = new Date().toISOString();
     let saved: LibraryCharacter = c;
     await this.update((lib) => {
       const i = lib.characters.findIndex((x) => x.id === c.id);
-      saved = { ...c, createdAt: i >= 0 ? lib.characters[i]!.createdAt ?? now : now, updatedAt: now };
-      const characters = i >= 0
+      const existing = i >= 0 ? lib.characters[i]! : undefined;
+      saved = {
+        ...c,
+        // `?? []` guards pre-schema records (documents written before `studies`
+        // existed are parsed on read, but upsert accepts raw caller objects).
+        studies: mergeStudies(existing?.studies ?? [], c.studies ?? []),
+        createdAt: existing?.createdAt ?? now,
+        updatedAt: now,
+      };
+      const characters = existing
         ? lib.characters.map((x, j) => (j === i ? saved : x))
         : [...lib.characters, saved];
       return { ...lib, characters };
@@ -140,6 +157,113 @@ export class LibraryStore {
 
   async removeCharacter(id: string): Promise<void> {
     await this.update((lib) => ({ ...lib, characters: lib.characters.filter((c) => c.id !== id) }));
+  }
+
+  // --- Character studies (the Character System workspace) -------------------
+
+  /**
+   * Read-modify-write one study of one character *under the lock* — the primitive
+   * every study mutation goes through, so a run's write-back and a user's rename
+   * can interleave without clobbering. `mutate` returning the study unchanged is a
+   * no-op. Returns the updated character (with the study inside), or undefined if
+   * the character or study is gone.
+   */
+  async updateStudy(
+    characterId: string,
+    studyId: string,
+    mutate: (study: CharacterStudy) => CharacterStudy,
+  ): Promise<LibraryCharacter | undefined> {
+    let result: LibraryCharacter | undefined;
+    const now = new Date().toISOString();
+    await this.update((lib) => {
+      const i = lib.characters.findIndex((c) => c.id === characterId);
+      const study = i >= 0 ? lib.characters[i]!.studies.find((s) => s.id === studyId) : undefined;
+      if (i < 0 || !study) return lib;
+      const next = { ...mutate(study), updatedAt: now };
+      result = {
+        ...lib.characters[i]!,
+        studies: lib.characters[i]!.studies.map((s) => (s.id === studyId ? next : s)),
+        updatedAt: now,
+      };
+      return { ...lib, characters: lib.characters.map((c, j) => (j === i ? result! : c)) };
+    });
+    return result;
+  }
+
+  /**
+   * Insert or replace one study *under the lock* (the generate route persists the
+   * study before its run starts, so the record exists — and survives a restart —
+   * while images are still streaming in). Replacing union-merges variants, same
+   * policy as `upsertCharacter`. Returns undefined if the character is gone.
+   */
+  async upsertStudy(
+    characterId: string,
+    study: CharacterStudy,
+  ): Promise<LibraryCharacter | undefined> {
+    let result: LibraryCharacter | undefined;
+    const now = new Date().toISOString();
+    await this.update((lib) => {
+      const i = lib.characters.findIndex((c) => c.id === characterId);
+      if (i < 0) return lib;
+      const cur = lib.characters[i]!;
+      const stamped = { ...study, createdAt: study.createdAt ?? now, updatedAt: now };
+      result = { ...cur, studies: mergeStudies(cur.studies, [stamped]), updatedAt: now };
+      return { ...lib, characters: lib.characters.map((c, j) => (j === i ? result! : c)) };
+    });
+    return result;
+  }
+
+  /**
+   * Append freshly generated variants to a study and select the newest — the
+   * run's write-back. Union-merged (content-addressed dedup + cap), re-read under
+   * the lock so edits made during a long run are preserved.
+   */
+  async appendStudyVariants(
+    characterId: string,
+    studyId: string,
+    variants: { hash: string; seed: number }[],
+  ): Promise<LibraryCharacter | undefined> {
+    if (variants.length === 0) return this.updateStudy(characterId, studyId, (s) => s);
+    return this.updateStudy(characterId, studyId, (s) => ({
+      ...s,
+      variants: unionVariants(s.variants, variants),
+      resultHash: variants.at(-1)!.hash,
+    }));
+  }
+
+  /** Remove one variant; if it was the selection, fall back to the newest remaining. */
+  async removeStudyVariant(
+    characterId: string,
+    studyId: string,
+    hash: string,
+  ): Promise<LibraryCharacter | undefined> {
+    return this.updateStudy(characterId, studyId, (s) => {
+      const variants = s.variants.filter((v) => v.hash !== hash);
+      const resultHash = s.resultHash === hash ? variants.at(-1)?.hash : s.resultHash;
+      return { ...s, variants, resultHash };
+    });
+  }
+
+  /** Delete one study. The ONLY way a study is removed — whole-record upserts
+   *  deliberately keep studies missing from a stale snapshot (see `mergeStudies`). */
+  async removeStudy(characterId: string, studyId: string): Promise<LibraryCharacter | undefined> {
+    let result: LibraryCharacter | undefined;
+    await this.update((lib) => {
+      const i = lib.characters.findIndex((c) => c.id === characterId);
+      if (i < 0) return lib;
+      const cur = lib.characters[i]!;
+      if (!cur.studies.some((s) => s.id === studyId)) {
+        result = cur;
+        return lib;
+      }
+      result = {
+        ...cur,
+        studies: cur.studies.filter((s) => s.id !== studyId),
+        updatedAt: new Date().toISOString(),
+      };
+      return { ...lib, characters: lib.characters.map((c, j) => (j === i ? result! : c)) };
+    });
+    return result;
   }
 
   // --- Style packs --------------------------------------------------------

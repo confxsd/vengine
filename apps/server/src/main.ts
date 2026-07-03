@@ -17,6 +17,7 @@ import { registerAssistRoutes } from "./assist.js";
 import { registerDraftRoutes } from "./draft.js";
 import { registerLibraryRoutes } from "./library.js";
 import { registerSceneRoutes } from "./scenes.js";
+import { registerStudyRoutes } from "./studies.js";
 
 // Load secrets from a .env file (server cwd, then up to the repo root) into
 // process.env before anything reads a key. Real env vars always take precedence.
@@ -60,8 +61,15 @@ app.get("/api/health", (c) => c.json({ ok: true }));
 app.get("/api/models", (c) => c.json(modelManifest(rt.providers)));
 app.get("/api/nodes", (c) => c.json(nodeManifest(rt.registry)));
 
+// App-wide in-flight run registry: every generation (comic frames, edits, study
+// runs) registers here so the one cancel endpoint can stop any paid run.
+const runs = new Map<string, AbortController>();
+
 // Comic Studio: project CRUD, snapshots, compile-and-run, asset upload.
-registerComicRoutes(app, rt, broadcast);
+registerComicRoutes(app, rt, broadcast, runs);
+
+// Character System: per-character design studies (generate / refine / curate).
+registerStudyRoutes(app, rt, broadcast, runs);
 
 // AI text assist: optimize/enrich/fix prompts and prose fields.
 registerAssistRoutes(app, rt);

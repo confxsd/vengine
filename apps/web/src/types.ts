@@ -1,4 +1,5 @@
 import type {
+  CharacterStudy,
   ComicAsset,
   ComicFrame,
   ComicProject,
@@ -7,6 +8,7 @@ import type {
   ComicVariant,
   Library,
   LibraryCharacter,
+  StudyCategory,
   SceneReference,
   SceneBreakdown,
   Series,
@@ -23,6 +25,7 @@ import type {
 export type {
   NodeProgressEvent,
   NodeRunStatus,
+  CharacterStudy,
   ComicAsset,
   ComicProject,
   ComicFrame,
@@ -31,6 +34,7 @@ export type {
   ComicVariant,
   Library,
   LibraryCharacter,
+  StudyCategory,
   SceneReference,
   SceneBreakdown,
   Series,
@@ -94,6 +98,49 @@ export interface SheetSegmentResult {
   height: number;
   regions: SheetRegion[];
 }
+
+/** Body for `POST /api/library/characters/:id/studies/generate` (mirrors the
+ *  server's `GenerateBody`). `studyId` is client-authored so the study can show
+ *  optimistically and WS previews route to it before the response lands. */
+export interface StudyGenerateRequest {
+  studyId: string;
+  category: StudyCategory;
+  title?: string;
+  prompt: string;
+  modelId: string;
+  styleId?: string;
+  count?: number;
+  seed?: number;
+  quality?: "preview" | "final";
+}
+
+/** Body for `POST …/studies/:studyId/refine` (mirrors the server's `RefineBody`). */
+export interface StudyRefineRequest {
+  baseHash: string;
+  instruction: string;
+  mode?: "tweak" | "restage";
+  modelId: string;
+  seed?: number;
+  quality?: "preview" | "final";
+}
+
+/** Response of the study generate/refine routes: the run outcome plus the
+ *  updated character (null only if it vanished mid-run). */
+export interface StudyRunResult {
+  runId: string;
+  status: "pending" | "running" | "done" | "error" | "cancelled";
+  error?: string;
+  studyId: string;
+  character: LibraryCharacter | null;
+}
+
+/** User-editable study fields (mirrors the server's `StudyPatchBody`). */
+export type StudyPatch = Partial<
+  Pick<
+    CharacterStudy,
+    "title" | "notes" | "prompt" | "category" | "starred" | "resultHash" | "styleId"
+  >
+>;
 
 /** Mirrors @vengine/storage ProjectStore.ProjectSummary (server-only package). */
 export interface ProjectSummary {

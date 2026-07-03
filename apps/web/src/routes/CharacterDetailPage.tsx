@@ -4,6 +4,7 @@ import {
   ArrowLeft,
   ImageDown,
   Loader2,
+  Orbit,
   Trash2,
   Upload,
   UserCircle2,
@@ -199,6 +200,18 @@ export default function CharacterDetailPage() {
 
         {/* Actions */}
         <section className="flex flex-wrap items-center gap-2 border-t border-border pt-4">
+          <Button
+            variant="accent"
+            size="sm"
+            onClick={() => navigate(`/system/${character.id}`)}
+            title="Expand this character into a reference system — poses, expressions, symbols, compositions"
+          >
+            <Orbit className="h-3.5 w-3.5" />
+            Character System
+            {character.studies.length > 0 && (
+              <span className="opacity-75">· {character.studies.length}</span>
+            )}
+          </Button>
           <Button variant="outline" size="sm" onClick={() => setTraining(true)} disabled={character.refHashes.length === 0}>
             <Zap className="h-3.5 w-3.5" />
             Train LoRA

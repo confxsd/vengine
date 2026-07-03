@@ -1,12 +1,17 @@
 import { create } from "zustand";
 import { toast } from "sonner";
 import { api, connectLibrary } from "./api";
+import { CharacterStudySchema } from "@vengine/shared";
 import type {
+  CharacterStudy,
   Library,
   LibraryCharacter,
   SceneReference,
   SceneBreakdown,
   Series,
+  StudyGenerateRequest,
+  StudyPatch,
+  StudyRefineRequest,
   StylePack,
   TrainedLora,
   TrainerInfo,
@@ -47,6 +52,22 @@ interface LibraryState {
   /** Crop the chosen sheet regions into refs and merge the updated character back. */
   extractSheetRefs: (hash: string, characterId: string, boxes: SheetBox[]) => Promise<number>;
 
+  // ── Character System (design studies) ──────────────────────────────────────
+  /** Studies currently generating/refining (by study id) — drives spinners. */
+  studyBusy: Record<string, boolean>;
+  /**
+   * Generate variants into a study. Creates the study locally (optimistic) when
+   * `req.studyId` is new; the same id routes WS previews before the response
+   * lands. Resolves once the run persisted (or failed).
+   */
+  generateStudy: (characterId: string, req: StudyGenerateRequest) => Promise<void>;
+  /** Instruction-driven refine of one study image → a new selected variant. */
+  refineStudy: (characterId: string, studyId: string, req: StudyRefineRequest) => Promise<void>;
+  /** Curate a study (rename, notes, re-shelve, star, select a variant). Optimistic. */
+  patchStudy: (characterId: string, studyId: string, patch: StudyPatch) => Promise<void>;
+  deleteStudy: (characterId: string, studyId: string) => Promise<void>;
+  deleteStudyVariant: (characterId: string, studyId: string, hash: string) => Promise<void>;
+
   createStyle: (name: string) => Promise<void>;
   patchStylePack: (id: string, patch: Partial<StylePack>) => Promise<void>;
   deleteStyle: (id: string) => Promise<void>;
@@ -81,6 +102,45 @@ export const useLibrary = create<LibraryState>((set, get) => {
     );
     return next;
   };
+
+  /** Adopt a server-returned character wholesale (the response is post-merge
+   *  authoritative — same pattern as `extractSheetRefs`). */
+  const adoptCharacter = (saved: LibraryCharacter) =>
+    set((s) => ({
+      library: {
+        ...s.library,
+        characters: s.library.characters.map((x) => (x.id === saved.id ? saved : x)),
+      },
+    }));
+
+  /** Optimistically mutate one study of one character in local state. */
+  const mutateStudyLocal = (
+    characterId: string,
+    studyId: string,
+    mutate: (st: CharacterStudy) => CharacterStudy | undefined,
+  ) =>
+    set((s) => ({
+      library: {
+        ...s.library,
+        characters: s.library.characters.map((c) => {
+          if (c.id !== characterId) return c;
+          const studies = c.studies.flatMap((st) => {
+            if (st.id !== studyId) return [st];
+            const next = mutate(st);
+            return next ? [next] : [];
+          });
+          return { ...c, studies };
+        }),
+      },
+    }));
+
+  const setStudyBusy = (studyId: string, busy: boolean) =>
+    set((s) => {
+      const studyBusy = { ...s.studyBusy };
+      if (busy) studyBusy[studyId] = true;
+      else delete studyBusy[studyId];
+      return { studyBusy };
+    });
 
   const mergeLora = (lora: TrainedLora) =>
     set((s) => {
@@ -216,6 +276,7 @@ export const useLibrary = create<LibraryState>((set, get) => {
         refHashes: [],
         description: "",
         palette: [],
+        studies: [],
         tags: [],
       };
       try {
@@ -263,6 +324,96 @@ export const useLibrary = create<LibraryState>((set, get) => {
         },
       }));
       return added.length;
+    },
+
+    studyBusy: {},
+
+    generateStudy: async (characterId, req) => {
+      // Optimistic: the study exists (and shows on its shelf) the moment the run
+      // starts; a re-run of an existing study just updates its brief. The record
+      // also rides along in any whole-character PUT during the run, where the
+      // server's merge keeps it consistent.
+      set((s) => ({
+        library: {
+          ...s.library,
+          characters: s.library.characters.map((c) => {
+            if (c.id !== characterId) return c;
+            const existing = c.studies.find((st) => st.id === req.studyId);
+            const draft = CharacterStudySchema.parse({
+              ...(existing ?? { id: req.studyId }),
+              category: req.category,
+              title: req.title || existing?.title || "",
+              prompt: req.prompt,
+              styleId: req.styleId ?? "",
+            });
+            const studies = existing
+              ? c.studies.map((st) => (st.id === req.studyId ? draft : st))
+              : [...c.studies, draft];
+            return { ...c, studies };
+          }),
+        },
+      }));
+      setStudyBusy(req.studyId, true);
+      try {
+        const res = await api.generateStudy(characterId, req);
+        if (res.character) adoptCharacter(res.character);
+        if (res.status !== "done") {
+          toast.error("Study generation failed", { description: res.error || res.status });
+        }
+      } catch (err) {
+        toast.error("Couldn't generate study", { description: (err as Error).message });
+        void get().refetch();
+      } finally {
+        setStudyBusy(req.studyId, false);
+      }
+    },
+
+    refineStudy: async (characterId, studyId, req) => {
+      setStudyBusy(studyId, true);
+      try {
+        const res = await api.refineStudy(characterId, studyId, req);
+        if (res.character) adoptCharacter(res.character);
+        if (res.status !== "done") {
+          toast.error("Refine failed", { description: res.error || res.status });
+        }
+      } catch (err) {
+        toast.error("Couldn't refine study", { description: (err as Error).message });
+        void get().refetch();
+      } finally {
+        setStudyBusy(studyId, false);
+      }
+    },
+
+    patchStudy: async (characterId, studyId, patch) => {
+      mutateStudyLocal(characterId, studyId, (st) => ({ ...st, ...patch }));
+      try {
+        adoptCharacter(await api.patchStudy(characterId, studyId, patch));
+      } catch (err) {
+        toast.error("Couldn't save study", { description: (err as Error).message });
+        void get().refetch();
+      }
+    },
+
+    deleteStudy: async (characterId, studyId) => {
+      mutateStudyLocal(characterId, studyId, () => undefined);
+      try {
+        adoptCharacter(await api.removeStudy(characterId, studyId));
+      } catch {
+        void get().refetch();
+      }
+    },
+
+    deleteStudyVariant: async (characterId, studyId, hash) => {
+      mutateStudyLocal(characterId, studyId, (st) => {
+        const variants = st.variants.filter((v) => v.hash !== hash);
+        const resultHash = st.resultHash === hash ? variants.at(-1)?.hash : st.resultHash;
+        return { ...st, variants, resultHash };
+      });
+      try {
+        adoptCharacter(await api.removeStudyVariant(characterId, studyId, hash));
+      } catch {
+        void get().refetch();
+      }
     },
 
     createStyle: async (name) => {

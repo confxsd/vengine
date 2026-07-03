@@ -4,6 +4,7 @@ import {
   Film,
   Images,
   Library as LibraryIcon,
+  Orbit,
   Settings,
   Workflow,
   type LucideIcon,
@@ -24,6 +25,7 @@ const ITEMS: NavItem[] = [
   { to: "/", label: "Studio", icon: Film, end: true },
   { to: "/canvas", label: "Canvas", icon: Workflow },
   { to: "/library", label: "Library", icon: LibraryIcon },
+  { to: "/system", label: "Character System", icon: Orbit },
   { to: "/scenes", label: "Scenes", icon: Images },
   { to: "/series", label: "Series", icon: BookOpen },
 ];

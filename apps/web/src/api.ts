@@ -17,7 +17,14 @@ import type {
   TrainingProgressEvent,
 } from "@vengine/shared";
 import { isTrainingEvent } from "@vengine/shared";
-import type { TrainerInfo, StartTrainingRequest } from "./types";
+import type {
+  TrainerInfo,
+  StartTrainingRequest,
+  StudyGenerateRequest,
+  StudyRefineRequest,
+  StudyRunResult,
+  StudyPatch,
+} from "./types";
 import type {
   ComicEditResult,
   ComicRunResult,
@@ -139,6 +146,26 @@ export const api = {
   startTraining: (req: StartTrainingRequest) => post<TrainedLora>("/api/training", req),
   removeLora: (id: string) =>
     fetch(`/api/library/loras/${id}`, { method: "DELETE" }).then((r) => r.ok),
+
+  // ── Character System (design studies) ─────────────────────────────────────────
+  generateStudy: (characterId: string, body: StudyGenerateRequest) =>
+    post<StudyRunResult>(`/api/library/characters/${characterId}/studies/generate`, body),
+  refineStudy: (characterId: string, studyId: string, body: StudyRefineRequest) =>
+    post<StudyRunResult>(`/api/library/characters/${characterId}/studies/${studyId}/refine`, body),
+  patchStudy: (characterId: string, studyId: string, patch: StudyPatch) =>
+    fetch(`/api/library/characters/${characterId}/studies/${studyId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(patch),
+    }).then(json<LibraryCharacter>),
+  removeStudy: (characterId: string, studyId: string) =>
+    fetch(`/api/library/characters/${characterId}/studies/${studyId}`, {
+      method: "DELETE",
+    }).then(json<LibraryCharacter>),
+  removeStudyVariant: (characterId: string, studyId: string, hash: string) =>
+    fetch(`/api/library/characters/${characterId}/studies/${studyId}/variants/${hash}`, {
+      method: "DELETE",
+    }).then(json<LibraryCharacter>),
 
   // ── Character-sheet ingestion ─────────────────────────────────────────────────
   /** Propose crop regions (with previews) from an uploaded sheet asset. */
