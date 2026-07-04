@@ -1,9 +1,11 @@
 import { forwardRef, useState } from "react";
 import { Maximize2 } from "lucide-react";
-import type { AssistField } from "@vengine/shared";
+import { ASSIST_MODE_META, type AssistField, type AssistMode } from "@vengine/shared";
 import { Textarea } from "../components/ui";
 import { AiAssistButton } from "./AiAssistButton";
 import { FocusedEditor } from "./FocusedEditor";
+import { PromptHistory } from "./PromptHistory";
+import { usePromptHistory, type PromptSnapshot } from "./usePromptHistory";
 import { cn } from "@/lib/cn";
 
 type TextareaProps = Omit<
@@ -58,6 +60,19 @@ export const AssistTextarea = forwardRef<HTMLTextAreaElement, Props>(
     ref,
   ) => {
     const [expanded, setExpanded] = useState(false);
+    const { snapshots, capture } = usePromptHistory();
+
+    // Save the current text before anything replaces it wholesale, so an "AI
+    // improve" (or a restore) can always be walked back. Manual typing is the
+    // live working copy and is intentionally never snapshotted.
+    const applyAi = (text: string, { mode }: { mode: AssistMode }) => {
+      capture(value, `Before ${ASSIST_MODE_META[mode].label.toLowerCase()}`);
+      onValueChange(text);
+    };
+    const restore = (snap: PromptSnapshot) => {
+      capture(value, "Before restore");
+      onValueChange(snap.value);
+    };
 
     return (
       <div className="group/assist relative">
@@ -93,14 +108,20 @@ export const AssistTextarea = forwardRef<HTMLTextAreaElement, Props>(
           </button>
         )}
 
-        <AiAssistButton
-          field={field}
-          value={value}
-          onApply={onValueChange}
-          context={context}
-          // Keep the bottom-right corner clear for the native resize grip.
-          className={resizable ? "left-1.5 right-auto" : undefined}
-        />
+        {/* History + AI improve, paired so prior prompts sit right where they're
+            replaced. Sits bottom-left when resizable to leave the native resize
+            grip (bottom-right) clear. */}
+        <div
+          // Stop the wrapping <label> from stealing focus / forwarding the click.
+          onMouseDown={(e) => e.stopPropagation()}
+          className={cn(
+            "absolute bottom-1.5 z-10 flex items-center gap-1",
+            resizable ? "left-1.5" : "right-1.5",
+          )}
+        >
+          <PromptHistory snapshots={snapshots} current={value} onRestore={restore} />
+          <AiAssistButton field={field} value={value} onApply={applyAi} context={context} />
+        </div>
 
         {expanded && (
           <FocusedEditor
@@ -109,6 +130,9 @@ export const AssistTextarea = forwardRef<HTMLTextAreaElement, Props>(
             value={value}
             placeholder={placeholder}
             onValueChange={onValueChange}
+            onAiApply={applyAi}
+            snapshots={snapshots}
+            onRestore={restore}
             context={context}
             onClose={() => setExpanded(false)}
           />

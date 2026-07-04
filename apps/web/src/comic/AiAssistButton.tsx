@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useState } from "react";
 import { createPortal } from "react-dom";
 import { Check, ChevronDown, Loader2, Sparkles } from "lucide-react";
 import { toast } from "sonner";
@@ -10,6 +10,7 @@ import {
 } from "@vengine/shared";
 import { useComic } from "../comicStore";
 import { api } from "../api";
+import { useAnchoredMenu } from "@/lib/useAnchoredMenu";
 import { cn } from "@/lib/cn";
 
 interface Props {
@@ -17,8 +18,8 @@ interface Props {
   field: AssistField;
   /** Current text value being revised. */
   value: string;
-  /** Called with the AI's revised text. */
-  onApply: (text: string) => void;
+  /** Called with the AI's revised text and the mode that produced it (for history). */
+  onApply: (text: string, meta: { mode: AssistMode }) => void;
   /** Field-aware context (story/settings/style/…) — see `buildAssistContext`. */
   context?: Record<string, string>;
   className?: string;
@@ -33,64 +34,8 @@ export function AiAssistButton({ field, value, onApply, context, className }: Pr
   const available = useComic((s) => s.assistAvailable);
   const [busy, setBusy] = useState<AssistMode | null>(null);
   const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
-  const menuRef = useRef<HTMLDivElement>(null);
-  // Fixed viewport coords for the portalled menu; null until measured.
-  const [coords, setCoords] = useState<{ top: number; left: number } | null>(null);
+  const { triggerRef, menuRef, coords } = useAnchoredMenu(open, () => setOpen(false));
   const meta = ASSIST_FIELD_META[field];
-
-  // Place the menu next to the trigger, flipping/clamping to stay on-screen.
-  const place = useCallback(() => {
-    const trigger = ref.current;
-    const menu = menuRef.current;
-    if (!trigger || !menu) return;
-    const t = trigger.getBoundingClientRect();
-    const m = menu.getBoundingClientRect();
-    const gap = 6;
-    const margin = 8;
-
-    // Prefer opening upward (over the field); flip down when cramped above.
-    const fitsAbove = t.top >= m.height + gap + margin;
-    const top = fitsAbove ? t.top - gap - m.height : t.bottom + gap;
-
-    // Align the menu's right edge to the trigger, then clamp into the viewport.
-    const left = Math.min(
-      Math.max(margin, t.right - m.width),
-      window.innerWidth - margin - m.width,
-    );
-
-    setCoords({
-      top: Math.min(Math.max(margin, top), window.innerHeight - margin - m.height),
-      left,
-    });
-  }, []);
-
-  useLayoutEffect(() => {
-    if (!open) {
-      setCoords(null);
-      return;
-    }
-    place();
-  }, [open, place]);
-
-  useEffect(() => {
-    if (!open) return;
-    const onDown = (e: MouseEvent) => {
-      const target = e.target as Node;
-      if (ref.current?.contains(target) || menuRef.current?.contains(target)) return;
-      setOpen(false);
-    };
-    const reposition = () => place();
-    window.addEventListener("mousedown", onDown);
-    // Keep the menu anchored as the page scrolls or the window resizes.
-    window.addEventListener("scroll", reposition, true);
-    window.addEventListener("resize", reposition);
-    return () => {
-      window.removeEventListener("mousedown", onDown);
-      window.removeEventListener("scroll", reposition, true);
-      window.removeEventListener("resize", reposition);
-    };
-  }, [open, place]);
 
   if (!available) return null;
 
@@ -100,7 +45,7 @@ export function AiAssistButton({ field, value, onApply, context, className }: Pr
     setBusy(mode);
     try {
       const res = await api.assist({ field, mode, text: value, context });
-      onApply(res.text);
+      onApply(res.text, { mode });
     } catch (err) {
       toast.error("AI assist failed", { description: (err as Error).message });
     } finally {
@@ -113,10 +58,11 @@ export function AiAssistButton({ field, value, onApply, context, className }: Pr
 
   return (
     <div
-      ref={ref}
+      ref={triggerRef}
       // Stop the wrapping <label> from stealing focus / forwarding the click.
       onMouseDown={(e) => e.stopPropagation()}
-      className={cn("absolute bottom-1.5 right-1.5 z-10 flex items-center", className)}
+      // Positioning is owned by the parent cluster (paired with the history control).
+      className={cn("flex items-center", className)}
     >
       <button
         type="button"

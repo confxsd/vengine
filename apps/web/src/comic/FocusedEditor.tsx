@@ -1,7 +1,9 @@
 import { useEffect, useRef } from "react";
 import { Minimize2 } from "lucide-react";
-import type { AssistField } from "@vengine/shared";
+import type { AssistField, AssistMode } from "@vengine/shared";
 import { AiAssistButton } from "./AiAssistButton";
+import { PromptHistory } from "./PromptHistory";
+import type { PromptSnapshot } from "./usePromptHistory";
 
 interface Props {
   /** Heading shown in the editor's title bar. */
@@ -11,6 +13,12 @@ interface Props {
   value: string;
   placeholder?: string;
   onValueChange: (value: string) => void;
+  /** Apply an AI revision — routed through the field's history so it's undoable. */
+  onAiApply: (text: string, meta: { mode: AssistMode }) => void;
+  /** Prior versions shared with the inline field (newest first). */
+  snapshots: PromptSnapshot[];
+  /** Restore a prior version. */
+  onRestore: (snap: PromptSnapshot) => void;
   context?: Record<string, string>;
   /** Collapse back to the inline field. */
   onClose: () => void;
@@ -27,6 +35,9 @@ export function FocusedEditor({
   value,
   placeholder,
   onValueChange,
+  onAiApply,
+  snapshots,
+  onRestore,
   context,
   onClose,
 }: Props) {
@@ -90,13 +101,13 @@ export function FocusedEditor({
             onChange={(e) => onValueChange(e.target.value)}
             className="block h-[55vh] w-full resize-none rounded-lg bg-bg p-4 pb-12 text-sm leading-relaxed text-text outline-none ring-1 ring-border transition-colors placeholder:text-faint focus:ring-accent"
           />
-          <AiAssistButton
-            field={field}
-            value={value}
-            onApply={onValueChange}
-            context={context}
-            className="bottom-6 right-6"
-          />
+          <div
+            onMouseDown={(e) => e.stopPropagation()}
+            className="absolute bottom-6 right-6 z-10 flex items-center gap-1"
+          >
+            <PromptHistory snapshots={snapshots} current={value} onRestore={onRestore} />
+            <AiAssistButton field={field} value={value} onApply={onAiApply} context={context} />
+          </div>
         </div>
 
         <footer className="flex items-center justify-end border-t border-border px-4 py-2 text-[11px] text-faint">
