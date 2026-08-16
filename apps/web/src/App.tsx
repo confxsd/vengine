@@ -14,6 +14,7 @@ const SystemRedirect = lazy(() => import("./routes/SystemRedirect"));
 const ScenesPage = lazy(() => import("./routes/ScenesPage"));
 const SeriesPage = lazy(() => import("./routes/SeriesPage"));
 const SettingsPage = lazy(() => import("./routes/SettingsPage"));
+const FocusPage = lazy(() => import("./routes/FocusPage"));
 
 export default function App() {
   const initLibrary = useLibrary((s) => s.init);
@@ -29,6 +30,7 @@ export default function App() {
       <Route element={<AppShell />}>
         <Route index element={<ComicStudio />} />
         <Route path="canvas" element={<CanvasPage />} />
+        <Route path="focus" element={<FocusPage />} />
         <Route path="library" element={<LibraryPage />} />
         <Route path="library/characters/:id" element={<CharacterDetailPage />} />
         {/* /system resolves to the last-visited character's System page. */}

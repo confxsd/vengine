@@ -2,6 +2,7 @@ import { NavLink } from "react-router-dom";
 import {
   BookOpen,
   Film,
+  Focus,
   Images,
   Library as LibraryIcon,
   Orbit,
@@ -23,6 +24,7 @@ interface NavItem {
 
 const ITEMS: NavItem[] = [
   { to: "/", label: "Studio", icon: Film, end: true },
+  { to: "/focus", label: "Focus", icon: Focus },
   { to: "/canvas", label: "Canvas", icon: Workflow },
   { to: "/library", label: "Library", icon: LibraryIcon },
   { to: "/system", label: "Character System", icon: Orbit },

@@ -8,6 +8,7 @@ import { AssetStore } from "@vengine/storage";
 import type { GraphDocument } from "@vengine/shared";
 import { createNodeRegistry } from "./index.js";
 import { createTextToImageNode, TextToImageParams } from "./image.js";
+import { createImageEditNode, ImageEditParams } from "./image.js";
 
 let work: string;
 let services: ExecutionServices;
@@ -113,5 +114,126 @@ describe("text-to-image cacheKeyParams gating", () => {
     const refs = [{ hash: "a".repeat(64), weight: 0.7 }];
     expect(key({ model: "mock/gradient", prompt: "x", references: refs }).references).toBeUndefined();
     expect(key({ model: "fal/nano-banana-pro", prompt: "x", references: refs }).references).toEqual(refs);
+  });
+});
+
+describe("image-edit node", () => {
+  const providers = new ProviderRegistry().registerAll([
+    mockModel, // consumes neither
+    falModels.nanoBananaPro, // consumesReferences
+  ]);
+  const node = createImageEditNode(providers);
+  const key = (p: Record<string, unknown>) =>
+    node.cacheKeyParams!(ImageEditParams.parse(p)) as ImageEditParams;
+
+  it("drops secondary references for a non-reference model, keeps them for one that can", () => {
+    const refs = [{ hash: "b".repeat(64) }];
+    expect(key({ model: "mock/gradient", instruction: "x", references: refs }).references).toBeUndefined();
+    expect(key({ model: "fal/nano-banana-pro", instruction: "x", references: refs }).references).toEqual(refs);
+  });
+
+  it("runs a source → edit pipeline end-to-end and caches on re-run", async () => {
+    // Seed a source asset by generating a gradient once.
+    const seedGraph: GraphDocument = {
+      version: 1,
+      id: "seed",
+      name: "seed",
+      nodes: [
+        {
+          id: "gen",
+          type: "generate.text-to-image",
+          position: { x: 0, y: 0 },
+          params: { model: "mock/gradient", prompt: "source", width: 128, height: 128, seed: 7 },
+        },
+      ],
+      edges: [],
+    };
+    const seeded = await executor.run(seedGraph, { runId: "r-seed", services });
+    const sourceHash = (seeded.nodes.get("gen")?.outputs?.image as { hash: string }).hash;
+
+    const focusGraph: GraphDocument = {
+      version: 1,
+      id: "focus",
+      name: "focus",
+      nodes: [
+        { id: "src", type: "io.source", position: { x: 0, y: 0 }, params: { hash: sourceHash } },
+        {
+          id: "e1",
+          type: "generate.image-edit",
+          position: { x: 0, y: 0 },
+          params: { model: "mock/gradient", instruction: "brighten", mode: "tweak", seed: 1 },
+        },
+        {
+          id: "e2",
+          type: "generate.image-edit",
+          position: { x: 0, y: 0 },
+          params: { model: "mock/gradient", instruction: "brighten", mode: "tweak", seed: 2 },
+        },
+      ],
+      edges: [
+        { id: "se1", source: "src", sourcePort: "image", target: "e1", targetPort: "image" },
+        { id: "se2", source: "src", sourcePort: "image", target: "e2", targetPort: "image" },
+      ],
+    };
+
+    const result = await executor.run(focusGraph, { runId: "r-focus", services });
+    expect(result.status).toBe("done");
+    expect(result.nodes.get("src")?.status).toBe("done");
+    for (const id of ["e1", "e2"]) {
+      const out = result.nodes.get(id)?.outputs?.image as { hash: string };
+      expect(out?.hash).toBeTruthy();
+      expect(out.hash).not.toBe(sourceHash);
+    }
+    // Diverged seeds produce different bytes (different cache entries).
+    expect((result.nodes.get("e1")?.outputs?.image as { hash: string }).hash).not.toBe(
+      (result.nodes.get("e2")?.outputs?.image as { hash: string }).hash,
+    );
+
+    // Unchanged re-run: source + both edits are cache hits.
+    const plan = await executor.plan(focusGraph);
+    for (const id of ["src", "e1", "e2"]) {
+      expect(plan.nodes.find((n) => n.nodeId === id)?.willRun).toBe(false);
+    }
+  });
+
+  it("defaults the edit output size to the source's own dimensions (same ratio)", async () => {
+    // A distinct non-square source: 64×128.
+    const seedGraph: GraphDocument = {
+      version: 1,
+      id: "seed-tall",
+      name: "seed",
+      nodes: [
+        {
+          id: "gen",
+          type: "generate.text-to-image",
+          position: { x: 0, y: 0 },
+          params: { model: "mock/gradient", prompt: "tall", width: 64, height: 128, seed: 3 },
+        },
+      ],
+      edges: [],
+    };
+    const seeded = await executor.run(seedGraph, { runId: "r-seed-tall", services });
+    const sourceHash = (seeded.nodes.get("gen")?.outputs?.image as { hash: string }).hash;
+
+    const editGraph: GraphDocument = {
+      version: 1,
+      id: "focus-ratio",
+      name: "focus",
+      nodes: [
+        { id: "src", type: "io.source", position: { x: 0, y: 0 }, params: { hash: sourceHash } },
+        {
+          id: "e1",
+          type: "generate.image-edit",
+          position: { x: 0, y: 0 },
+          params: { model: "mock/gradient", instruction: "x", seed: 9 },
+        },
+      ],
+      edges: [{ id: "se1", source: "src", sourcePort: "image", target: "e1", targetPort: "image" }],
+    };
+
+    const result = await executor.run(editGraph, { runId: "r-ratio", services });
+    const out = result.nodes.get("e1")?.outputs?.image as { width?: number; height?: number };
+    expect(out.width).toBe(64);
+    expect(out.height).toBe(128);
   });
 });

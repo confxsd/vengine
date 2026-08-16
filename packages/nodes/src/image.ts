@@ -1,6 +1,11 @@
 import { z } from "zod";
 import type { NodeDefinition, RenderQuality } from "@vengine/core";
-import type { AssetRef } from "@vengine/shared";
+import {
+  composeEditPrompt,
+  DEFAULT_REFERENCE_WEIGHT,
+  type AssetRef,
+  type EditMode,
+} from "@vengine/shared";
 import type { ReferenceInput, NormalizedInput, ProviderRegistry } from "@vengine/providers";
 import type { AssetStore } from "@vengine/storage";
 import "./services.js";
@@ -140,6 +145,142 @@ export function createTextToImageNode(
         ? await loadReferences(ctx.services.assets, resolveRefSpecs(params))
         : [];
       const input = { ...toInput(params, ctx.quality), ...(references.length ? { references } : {}) };
+      const asset = await model.run(input, { apiKey, signal });
+      const ref: AssetRef = await ctx.services.assets.put(asset.bytes, asset.mime);
+      ctx.emit({
+        runId: ctx.runId,
+        nodeId,
+        status: "running",
+        previewHash: ref.hash,
+        cost: asset.costUsd,
+        at: new Date().toISOString(),
+      });
+      return { image: ref };
+    },
+  };
+}
+
+/** Params for `generate.image-edit` (the focus-mode image-to-image edit node). */
+export const ImageEditParams = z.object({
+  model: z.string().default("mock/gradient"),
+  /** What to change; empty = a bare tweak/restage of the source. */
+  instruction: z.string().default(""),
+  /** How freely to deviate from the source image. */
+  mode: z.enum(["tweak", "restage"]).default("tweak"),
+  /** Optional style theme clause, appended between the instruction and the directive. */
+  theme: z.string().optional(),
+  negativePrompt: z.string().optional(),
+  width: z.number().int().positive().optional(),
+  height: z.number().int().positive().optional(),
+  steps: z.number().int().positive().optional(),
+  guidance: z.number().optional(),
+  seed: z.number().int().optional(),
+  /**
+   * Secondary reference images (style anchors, identity refs) applied alongside
+   * the source image. The source always leads at full weight; entries whose hash
+   * equals the source are dropped (dedupe, base first).
+   */
+  references: z
+    .array(z.object({ hash: z.string().length(64), weight: z.number().min(0).max(1).optional() }))
+    .optional(),
+  /** Hosted LoRAs applied by LoRA-capable models (same semantics as text-to-image). */
+  loras: z
+    .array(z.object({ path: z.string().min(1), scale: z.number().optional() }))
+    .optional(),
+});
+export type ImageEditParams = z.infer<typeof ImageEditParams>;
+
+/**
+ * Instruction-driven image-to-image edit node — the engine primitive behind the
+ * Focus studio. Takes the parent's image on its `image` port as the leading,
+ * full-weight reference (the same composition `compileEditFrame` uses), composes
+ * the edit prompt from (instruction, mode, theme) via the shared helpers, and runs
+ * an edit-capable model. Content-addressed on (params, source image content), so a
+ * diverged tree re-runs only cache-miss branches — and siblings run in parallel.
+ */
+export function createImageEditNode(
+  providers: ProviderRegistry,
+): NodeDefinition<ImageEditParams> {
+  return {
+    type: "generate.image-edit",
+    category: "generation",
+    title: "Image Edit",
+    qualitySensitive: true,
+    inputs: [{ id: "image", type: "image", label: "Image", required: true }],
+    outputs: [{ id: "image", type: "image", label: "Image" }],
+    paramsSchema: ImageEditParams,
+
+    // The source image rides the `image` input (always in the cache key); secondary
+    // references/loras only affect output on adapters that consume them — same
+    // gating as text-to-image so toggling them on a non-consuming model stays a hit.
+    cacheKeyParams(params) {
+      const model = providers.get(params.model);
+      let p: ImageEditParams = params;
+      if (!model?.consumesReferences) {
+        const { references: _r, ...rest } = p;
+        p = rest;
+      }
+      if (!model?.consumesLoras && p.loras) {
+        const { loras: _l, ...rest } = p;
+        p = rest;
+      }
+      return p;
+    },
+
+    estimateCost({ params, quality }) {
+      const model = providers.get(params.model);
+      if (!model) return 0;
+      return model.estimateCost({
+        prompt: params.instruction,
+        width: params.width,
+        height: params.height,
+        steps: params.steps,
+        guidance: params.guidance,
+        quality,
+      });
+    },
+
+    async execute({ nodeId, params, inputs, ctx, signal }) {
+      const model = providers.require(params.model);
+      const apiKey = ctx.services.getApiKey?.(model.provider);
+      const base = inputs.image as AssetRef;
+
+      // Default the output size to the source image's own dimensions, so an edit
+      // preserves the aspect ratio unless width/height are explicitly overridden.
+      const baseMeta =
+        params.width === undefined || params.height === undefined
+          ? await ctx.services.assets.getMeta(base.hash)
+          : null;
+      const width = params.width ?? baseMeta?.width;
+      const height = params.height ?? baseMeta?.height;
+
+      // Source leads at full weight, then the secondary refs (deduped, base first).
+      const extraSpecs = (params.references ?? []).filter((r) => r.hash !== base.hash);
+      const references = model.consumesReferences
+        ? await loadReferences(ctx.services.assets, [
+            { hash: base.hash, weight: DEFAULT_REFERENCE_WEIGHT },
+            ...extraSpecs,
+          ])
+        : [];
+
+      const theme = params.theme?.trim();
+      const prompt = theme
+        ? `${composeEditPrompt(params.instruction, params.mode)}\n\nStyle: ${theme}`
+        : composeEditPrompt(params.instruction, params.mode);
+
+      const input: NormalizedInput = {
+        prompt,
+        negativePrompt: params.negativePrompt,
+        width,
+        height,
+        steps: params.steps,
+        guidance: params.guidance,
+        seed: params.seed,
+        loras: params.loras,
+        quality: ctx.quality,
+        ...(references.length ? { references } : {}),
+      };
+
       const asset = await model.run(input, { apiKey, signal });
       const ref: AssetRef = await ctx.services.assets.put(asset.bytes, asset.mime);
       ctx.emit({

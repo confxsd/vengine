@@ -35,6 +35,34 @@ export const loadImageNode: NodeDefinition<{ path: string }> = {
   },
 };
 
+/**
+ * Source node: emits an already-stored asset (identified by its content hash) as an
+ * image value without re-reading bytes. The Focus studio's tree roots on this — the
+ * uploaded/chosen image flows into every root-level edit — and because the output
+ * carries the content hash, changing the source transitively invalidates downstream
+ * cache keys. Verifies the asset exists so a stale source fails loudly, not deep in
+ * a paid edit.
+ */
+export const sourceNode: NodeDefinition<{ hash: string }> = {
+  type: "io.source",
+  category: "io",
+  title: "Source Image",
+  inputs: [],
+  outputs: [{ id: "image", type: "image", label: "Image" }],
+  paramsSchema: z.object({ hash: z.string().length(64) }),
+  async execute({ params, ctx }) {
+    const meta = await ctx.services.assets.getMeta(params.hash);
+    return {
+      image: {
+        hash: params.hash,
+        mime: meta.mime,
+        width: meta.width,
+        height: meta.height,
+      } satisfies AssetRef,
+    };
+  },
+};
+
 export const ExportParams = z.object({
   dir: z.string().min(1),
   filename: z.string().default("output"),
