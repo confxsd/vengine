@@ -26,5 +26,6 @@
     "bindings": [{ "name": "FEED", "class_name": "FeedDo" }]
   },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["FeedDo"] }],
-  "build": { "command": "pnpm --filter @vengine/web build" }
+  "build": { "command": "pnpm --filter @vengine/web build" },
+  "secrets": { "required": ["ADMIN_PASSWORD"] }
 }

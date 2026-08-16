@@ -13,6 +13,8 @@ export interface Env {
   /** Secrets — set via `wrangler secret put`. */
   FAL_KEY?: string;
   DEEPSEEK_KEY?: string;
+  /** Gate password — when set, the whole app requires a session cookie. */
+  ADMIN_PASSWORD?: string;
   /** Optional VLM slug override for scene understanding. */
   FAL_VISION_MODEL?: string;
 }

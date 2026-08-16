@@ -40,6 +40,32 @@ import type {
   SheetBox,
   SheetSegmentResult,
 } from "./types";
+import { ensureAuth } from "./authPrompt";
+
+/**
+ * Fetch with a one-shot auth retry: the deployed studio gates paid/mutating
+ * requests behind an admin password, so a 401 opens the password prompt and,
+ * once signed in, retries the original request with the fresh session cookie.
+ */
+async function request(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+  const res = await fetch(input, init);
+  if (res.status !== 401 || isRetry(init)) return res;
+  const authed = await ensureAuth();
+  if (!authed) return res;
+  return fetch(input, withRetry(init));
+}
+
+const RETRY_MARK = Symbol("auth-retried");
+
+function isRetry(init?: RequestInit): boolean {
+  return (init as { [RETRY_MARK]?: boolean } | undefined)?.[RETRY_MARK] === true;
+}
+
+function withRetry(init: RequestInit | undefined): RequestInit {
+  const retried = { ...init } as RequestInit & { [RETRY_MARK]?: boolean };
+  retried[RETRY_MARK] = true;
+  return retried;
+}
 
 async function json<T>(res: Response): Promise<T> {
   if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
@@ -47,7 +73,7 @@ async function json<T>(res: Response): Promise<T> {
 }
 
 function post<T>(url: string, body?: unknown): Promise<T> {
-  return fetch(url, {
+  return request(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body ?? {}),
@@ -55,18 +81,18 @@ function post<T>(url: string, body?: unknown): Promise<T> {
 }
 
 export const api = {
-  models: () => fetch("/api/models").then(json<ModelInfo[]>),
-  nodes: () => fetch("/api/nodes").then(json<NodeManifestEntry[]>),
+  models: () => request("/api/models").then(json<ModelInfo[]>),
+  nodes: () => request("/api/nodes").then(json<NodeManifestEntry[]>),
 
   plan: (graph: GraphDocument, quality?: "preview" | "final", targets?: string[]) =>
-    fetch("/api/plan", {
+    request("/api/plan", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ graph, quality, targets }),
     }).then(json<RunPlan>),
 
   run: (graph: GraphDocument, quality?: "preview" | "final", targets?: string[]) =>
-    fetch("/api/run", {
+    request("/api/run", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ graph, quality, targets }),
@@ -76,11 +102,11 @@ export const api = {
   thumbUrl: (hash: string) => `/api/thumbs/${hash}`,
 
   // ── Comic Studio ──────────────────────────────────────────────────────────
-  comics: () => fetch("/api/comics").then(json<ProjectSummary[]>),
-  comic: (id: string) => fetch(`/api/comics/${id}`).then(json<ComicProject>),
+  comics: () => request("/api/comics").then(json<ProjectSummary[]>),
+  comic: (id: string) => request(`/api/comics/${id}`).then(json<ComicProject>),
   createComic: (name?: string) => post<ComicProject>("/api/comics", { name }),
   saveComic: (project: ComicProject) =>
-    fetch(`/api/comics/${project.id}`, {
+    request(`/api/comics/${project.id}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(project),
@@ -102,50 +128,50 @@ export const api = {
     },
   ) => post<ComicEditResult>(`/api/comics/${id}/frames/${frameId}/edit`, body),
   deleteVariant: (id: string, frameId: string, hash: string) =>
-    fetch(`/api/comics/${id}/frames/${frameId}/variants/${hash}`, { method: "DELETE" }).then(
+    request(`/api/comics/${id}/frames/${frameId}/variants/${hash}`, { method: "DELETE" }).then(
       json<FrameOutputDelta>,
     ),
   snapshotComic: (id: string) => post<SnapshotEntry>(`/api/comics/${id}/snapshot`),
-  snapshots: (id: string) => fetch(`/api/comics/${id}/snapshots`).then(json<SnapshotEntry[]>),
+  snapshots: (id: string) => request(`/api/comics/${id}/snapshots`).then(json<SnapshotEntry[]>),
   cancelRun: (runId: string) =>
-    fetch(`/api/runs/${runId}/cancel`, { method: "POST" }).then((r) => r.ok),
+    request(`/api/runs/${runId}/cancel`, { method: "POST" }).then((r) => r.ok),
 
   uploadAsset: (file: File) => {
     const form = new FormData();
     form.append("file", file);
-    return fetch("/api/assets", { method: "POST", body: form }).then(json<AssetRef>);
+    return request("/api/assets", { method: "POST", body: form }).then(json<AssetRef>);
   },
 
   // ── AI text assist ──────────────────────────────────────────────────────────
-  assistConfig: () => fetch("/api/assist/config").then(json<AssistConfig>),
+  assistConfig: () => request("/api/assist/config").then(json<AssistConfig>),
   assist: (req: AssistRequest) => post<AssistResponse>("/api/assist", req),
 
   // ── Draft import ──────────────────────────────────────────────────────────────
-  draftConfig: () => fetch("/api/draft/config").then(json<DraftConfig>),
+  draftConfig: () => request("/api/draft/config").then(json<DraftConfig>),
   parseDraft: (text: string) => post<DraftParseResponse>("/api/draft/parse", { text }),
 
   // ── Cross-project Library ─────────────────────────────────────────────────────
-  library: () => fetch("/api/library").then(json<Library>),
-  trainers: () => fetch("/api/trainers").then(json<TrainerInfo[]>),
+  library: () => request("/api/library").then(json<Library>),
+  trainers: () => request("/api/trainers").then(json<TrainerInfo[]>),
   upsertCharacter: (c: LibraryCharacter) =>
-    fetch("/api/library/characters", {
+    request("/api/library/characters", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(c),
     }).then(json<LibraryCharacter>),
   removeCharacter: (id: string) =>
-    fetch(`/api/library/characters/${id}`, { method: "DELETE" }).then((r) => r.ok),
+    request(`/api/library/characters/${id}`, { method: "DELETE" }).then((r) => r.ok),
   upsertStyle: (s: StylePack) =>
-    fetch("/api/library/styles", {
+    request("/api/library/styles", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(s),
     }).then(json<StylePack>),
   removeStyle: (id: string) =>
-    fetch(`/api/library/styles/${id}`, { method: "DELETE" }).then((r) => r.ok),
+    request(`/api/library/styles/${id}`, { method: "DELETE" }).then((r) => r.ok),
   startTraining: (req: StartTrainingRequest) => post<TrainedLora>("/api/training", req),
   removeLora: (id: string) =>
-    fetch(`/api/library/loras/${id}`, { method: "DELETE" }).then((r) => r.ok),
+    request(`/api/library/loras/${id}`, { method: "DELETE" }).then((r) => r.ok),
 
   // ── Character System (design studies) ─────────────────────────────────────────
   generateStudy: (characterId: string, body: StudyGenerateRequest) =>
@@ -153,17 +179,17 @@ export const api = {
   refineStudy: (characterId: string, studyId: string, body: StudyRefineRequest) =>
     post<StudyRunResult>(`/api/library/characters/${characterId}/studies/${studyId}/refine`, body),
   patchStudy: (characterId: string, studyId: string, patch: StudyPatch) =>
-    fetch(`/api/library/characters/${characterId}/studies/${studyId}`, {
+    request(`/api/library/characters/${characterId}/studies/${studyId}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(patch),
     }).then(json<LibraryCharacter>),
   removeStudy: (characterId: string, studyId: string) =>
-    fetch(`/api/library/characters/${characterId}/studies/${studyId}`, {
+    request(`/api/library/characters/${characterId}/studies/${studyId}`, {
       method: "DELETE",
     }).then(json<LibraryCharacter>),
   removeStudyVariant: (characterId: string, studyId: string, hash: string) =>
-    fetch(`/api/library/characters/${characterId}/studies/${studyId}/variants/${hash}`, {
+    request(`/api/library/characters/${characterId}/studies/${studyId}/variants/${hash}`, {
       method: "DELETE",
     }).then(json<LibraryCharacter>),
 
@@ -179,7 +205,7 @@ export const api = {
     }),
 
   // ── Scenes (image → text) ──────────────────────────────────────────────────────
-  sceneConfig: () => fetch("/api/scenes/config").then(json<SceneConfig>),
+  sceneConfig: () => request("/api/scenes/config").then(json<SceneConfig>),
   /**
    * Describe an uploaded scene image into a structured breakdown. The server persists
    * a record either way: on a model failure it returns the **failed scene** (200-style
@@ -187,7 +213,7 @@ export const api = {
    * instead of throwing — only a malformed/blocked request (no scene id) throws.
    */
   describeScene: async (hash: string, name?: string): Promise<SceneReference> => {
-    const res = await fetch("/api/scenes/describe", {
+    const res = await request("/api/scenes/describe", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ hash, name }),
@@ -197,22 +223,22 @@ export const api = {
     return data;
   },
   patchScene: (id: string, patch: { name?: string; tags?: string[]; description?: Partial<SceneBreakdown> }) =>
-    fetch(`/api/scenes/${id}`, {
+    request(`/api/scenes/${id}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(patch),
     }).then(json<SceneReference>),
-  removeScene: (id: string) => fetch(`/api/scenes/${id}`, { method: "DELETE" }).then((r) => r.ok),
+  removeScene: (id: string) => request(`/api/scenes/${id}`, { method: "DELETE" }).then((r) => r.ok),
 
   // ── Series ─────────────────────────────────────────────────────────────────────
   upsertSeries: (s: Series) =>
-    fetch("/api/library/series", {
+    request("/api/library/series", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(s),
     }).then(json<Series>),
   removeSeries: (id: string) =>
-    fetch(`/api/library/series/${id}`, { method: "DELETE" }).then((r) => r.ok),
+    request(`/api/library/series/${id}`, { method: "DELETE" }).then((r) => r.ok),
 };
 
 /**

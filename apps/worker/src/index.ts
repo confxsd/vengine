@@ -20,6 +20,15 @@ import { DoRunHost } from "./run-host.js";
 import { DoTrainingHost } from "./training-host.js";
 import { FEED_ID, FeedDo, type SerializedRun } from "./feed-do.js";
 import type { Env } from "./env.js";
+import {
+  clearSessionCookie,
+  isAuthed,
+  isPublicPath,
+  attemptDelay,
+  recordAttempt,
+  sessionCookieHeader,
+  sessionCookieValue,
+} from "./auth.js";
 
 export { FeedDo };
 
@@ -53,6 +62,36 @@ function createApp(env: Env): Hono {
   // bindings generic. Worker bindings are read via `c.env as Env`.
   const app = new Hono();
   app.use("/api/*", cors());
+
+  // ── Auth (the gate) ──────────────────────────────────────────────────────
+  app.post("/api/auth/login", async (c) => {
+    const env = c.env as Env;
+    const password = env.ADMIN_PASSWORD;
+    // No password configured (local dev) — the gate is off.
+    if (!password) return c.json({ ok: true });
+    const body = (await c.req.json().catch(() => ({}))) as { password?: string };
+    const given = typeof body.password === "string" ? body.password : "";
+    const ip = c.req.header("CF-Connecting-IP") ?? "local";
+    await attemptDelay(); // slow down brute force regardless of outcome
+    const locked = recordAttempt(ip, given === password);
+    if (locked) return c.json({ error: locked }, 429);
+    if (given !== password) return c.json({ error: "wrong password" }, 401);
+    c.header("Set-Cookie", sessionCookieHeader(await sessionCookieValue(password)));
+    return c.json({ ok: true });
+  });
+
+  app.post("/api/auth/logout", (c) => {
+    c.header("Set-Cookie", clearSessionCookie());
+    return c.json({ ok: true });
+  });
+
+  app.get("/api/auth/check", async (c) => {
+    const env = c.env as Env;
+    if (!env.ADMIN_PASSWORD) return c.json({ ok: true });
+    return (await isAuthed(c.req.raw, env.ADMIN_PASSWORD))
+      ? c.json({ ok: true })
+      : c.json({ error: "unauthorized" }, 401);
+  });
 
   app.get("/api/health", (c) => c.json({ ok: true }));
   app.get("/api/models", (c) => c.json(modelManifest(rt.providers)));
@@ -183,9 +222,39 @@ let app: Hono | undefined;
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
+
+    // Admin-password gate: browsing is public (GET/HEAD/OPTIONS), but paid or
+    // mutating requests need a valid session cookie once ADMIN_PASSWORD is
+    // configured. Without a secret (local dev) the gate is off.
+    const password = env.ADMIN_PASSWORD;
+    const method = request.method.toUpperCase();
+    if (
+      password &&
+      method !== "GET" &&
+      method !== "HEAD" &&
+      method !== "OPTIONS" &&
+      !isPublicPath(url.pathname)
+    ) {
+      if (!(await isAuthed(request, password))) {
+        return new Response(JSON.stringify({ error: "unauthorized" }), {
+          status: 401,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+    }
+
     // Everything that isn't API or the WS feed is the built web app.
     if (!url.pathname.startsWith("/api") && url.pathname !== "/ws") {
-      return env.STATIC.fetch(request);
+      const res = await env.STATIC.fetch(request);
+      // HTML must never be edge-cached: the gate runs in this worker, and a
+      // CDN-cached index.html would bypass it for unauthenticated visitors.
+      const ct = res.headers.get("Content-Type") ?? "";
+      if (ct.includes("text/html")) {
+        const copy = new Response(res.body, res);
+        copy.headers.set("Cache-Control", "private, no-store");
+        return copy;
+      }
+      return res;
     }
     app ??= createApp(env);
     return app.fetch(request, env);
