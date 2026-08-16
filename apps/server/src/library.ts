@@ -5,11 +5,23 @@ import {
   SeriesSchema,
   LoraKind,
   type TrainingProgressEvent,
+  type TrainedLora,
 } from "@vengine/shared";
 import { analyzeSheet, cropRegion, cropPreview } from "@vengine/providers";
 import { z } from "zod";
 import type { Runtime } from "./runtime.js";
-import { TrainingService } from "./training.js";
+import { TrainingService, type StartTrainingParams } from "./training.js";
+
+/**
+ * Drives long-running LoRA training. The Node server uses `TrainingService`
+ * (in-process poll loop); the Cloudflare Worker uses a Durable Object that
+ * submits and polls fal across alarm invocations. Same persisted record
+ * semantics: the library row is the source of truth, WS events are hints.
+ */
+export interface TrainingHost {
+  start(params: StartTrainingParams): Promise<TrainedLora>;
+  remove(id: string): Promise<void>;
+}
 
 /** A crop rectangle in full-resolution sheet pixels (mirrors providers' `Box`). */
 const SheetBoxSchema = z.object({
@@ -62,14 +74,17 @@ export function registerLibraryRoutes(
   app: Hono,
   rt: Runtime,
   broadcast: (event: TrainingProgressEvent) => void,
-): TrainingService {
-  const training = new TrainingService({
-    library: rt.library,
-    assets: rt.assets,
-    trainers: rt.trainers,
-    getApiKey: () => rt.services.getApiKey?.("fal"),
-    broadcast,
-  });
+  trainingHost?: TrainingHost,
+): TrainingHost {
+  const training: TrainingHost =
+    trainingHost ??
+    new TrainingService({
+      library: rt.library,
+      assets: rt.assets,
+      trainers: rt.trainers,
+      getApiKey: () => rt.services.getApiKey?.("fal"),
+      broadcast,
+    });
 
   // Whole library (source of truth; the client refetches this on reconnect).
   app.get("/api/library", async (c) => c.json(await rt.library.get()));

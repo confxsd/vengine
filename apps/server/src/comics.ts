@@ -7,12 +7,12 @@ import {
   compileEditFrame,
   genNodeId,
   exportNodeId,
-  frameIdFromNodeId,
   unionVariants,
   type ComicProject,
   type NodeProgressEvent,
 } from "@vengine/shared";
 import type { Runtime } from "./runtime.js";
+import type { RunHost } from "./run-host.js";
 
 type Broadcast = (event: NodeProgressEvent & { kind?: string }) => void;
 
@@ -53,15 +53,15 @@ const EditBody = z.object({
 });
 
 /**
- * Mount the Comic Studio routes onto the main Hono app. `runs` is the app-wide
- * in-flight run registry (shared with the study routes), so a client can cancel
- * ANY generation by runId through the single cancel endpoint mounted here.
+ * Mount the Comic Studio routes onto the main Hono app. Runs execute through
+ * the shared `RunHost`, so the single cancel endpoint can stop any generation
+ * by runId regardless of which feature started it.
  */
 export function registerComicRoutes(
   app: Hono,
   rt: Runtime,
   broadcast: Broadcast,
-  runs: Map<string, AbortController>,
+  runHost: RunHost,
 ): void {
 
   // List projects (for the switcher).
@@ -164,40 +164,25 @@ export function registerComicRoutes(
     const seedByFrame = new Map(project.frames.map((f) => [f.id, f.seed ?? project.style.seed]));
 
     const runId = randomUUID();
-    const ac = new AbortController();
-    runs.set(runId, ac);
     broadcast({ runId, nodeId: "*", status: "running", at: new Date().toISOString() });
 
-    // Capture hashes as they stream so a cancelled/failed run still persists the
-    // frames that did finish (their bytes are already in the asset store).
-    const produced = new Map<string, string>();
-    const onEmit = (e: NodeProgressEvent) => {
-      const frameId = frameIdFromNodeId(e.nodeId);
-      if (frameId && e.nodeId.startsWith("gen-") && e.previewHash) produced.set(frameId, e.previewHash);
-      broadcast(e);
-    };
-
-    let result;
-    try {
-      result = await rt.executor.run(graph, {
-        runId,
-        services: rt.services,
-        quality: parsed.data.quality,
-        targets,
-        emit: onEmit,
-        signal: ac.signal,
-      });
-    } finally {
-      runs.delete(runId);
-    }
+    // The RunHost captures streamed preview hashes (its `produced` map), so a
+    // cancelled/failed run still persists the frames that did finish.
+    const result = await runHost.run(runId, {
+      graph,
+      quality: parsed.data.quality,
+      targets,
+      emit: broadcast,
+    });
+    const produced = result.produced;
 
     // Prefer the authoritative run result; fall back to streamed hashes for any
     // frame that finished after an early stop.
     for (const f of project.frames) {
       const fromResult = (result.nodes.get(genNodeId(f.id))?.outputs?.image as { hash?: string } | undefined)
         ?.hash;
-      const hash = fromResult ?? produced.get(f.id);
-      if (hash) produced.set(f.id, hash);
+      const hash = fromResult ?? produced[genNodeId(f.id)];
+      if (hash) produced[genNodeId(f.id)] = hash;
     }
 
     // Apply the delta to the *latest* document under the store lock, so edits made
@@ -207,7 +192,7 @@ export function registerComicRoutes(
       saved = await rt.projects.update(id, (latest) => ({
         ...latest,
         frames: latest.frames.map((f) => {
-          const hash = produced.get(f.id);
+          const hash = produced[genNodeId(f.id)];
           if (!hash) return f;
           const seed = seedByFrame.get(f.id) ?? latest.style.seed;
           return {
@@ -278,33 +263,21 @@ export function registerComicRoutes(
     const seed = req.seed ?? frame.seed ?? project.style.seed;
 
     const runId = randomUUID();
-    const ac = new AbortController();
-    runs.set(runId, ac);
     broadcast({ runId, nodeId: "*", status: "running", at: new Date().toISOString() });
 
-    // Capture the streamed hash so a finished-then-stopped edit still persists.
-    let produced: string | undefined;
-    const onEmit = (e: NodeProgressEvent) => {
-      if (e.nodeId === gid && e.previewHash) produced = e.previewHash;
-      broadcast(e);
-    };
-
-    let result;
-    try {
-      result = await rt.executor.run(graph, {
-        runId,
-        services: rt.services,
-        quality: req.quality,
-        targets: [gid],
-        emit: onEmit,
-        signal: ac.signal,
-      });
-    } finally {
-      runs.delete(runId);
-    }
+    // The RunHost captures the streamed hash, so a finished-then-stopped edit
+    // still persists (its bytes are already in the asset store).
+    const result = await runHost.run(runId, {
+      graph,
+      quality: req.quality,
+      targets: [gid],
+      emit: broadcast,
+    });
+    const produced = result.produced;
 
     const hash =
-      (result.nodes.get(gid)?.outputs?.image as { hash?: string } | undefined)?.hash ?? produced;
+      (result.nodes.get(gid)?.outputs?.image as { hash?: string } | undefined)?.hash ??
+      produced[gid];
 
     let saved = project;
     if (hash) {
@@ -340,10 +313,9 @@ export function registerComicRoutes(
   });
 
   // Cancel an in-flight run (the client learns runId from the "*" start event).
-  app.post("/api/runs/:runId/cancel", (c) => {
-    const ac = runs.get(c.req.param("runId"));
-    if (!ac) return c.json({ error: "no such run" }, 404);
-    ac.abort();
+  app.post("/api/runs/:runId/cancel", async (c) => {
+    const ok = await runHost.cancel(c.req.param("runId"));
+    if (!ok) return c.json({ error: "no such run" }, 404);
     return c.json({ ok: true });
   });
 

@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { FalHttpError, type TrainingAdapter, type TrainingHandle } from "@vengine/providers";
-import type { AssetStore, LibraryStore } from "@vengine/storage";
+import type { AssetStoreLike, LibraryStoreLike } from "@vengine/storage";
 import { TrainingStatus, LoraKind, trainingEvent, type TrainedLora, type TrainingProgressEvent } from "@vengine/shared";
 
 /** How often a background job polls fal for status. */
@@ -26,8 +26,8 @@ export interface StartTrainingParams {
 }
 
 export interface TrainingServiceDeps {
-  library: LibraryStore;
-  assets: AssetStore;
+  library: LibraryStoreLike;
+  assets: AssetStoreLike;
   trainers: { get(id: string): TrainingAdapter | undefined; require(id: string): TrainingAdapter };
   /** Resolve the fal API key (server env only). */
   getApiKey: () => string | undefined;

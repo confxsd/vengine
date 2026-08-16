@@ -17,6 +17,7 @@ import {
   type StudyStyleSource,
 } from "@vengine/shared";
 import type { Runtime } from "./runtime.js";
+import type { RunHost } from "./run-host.js";
 
 type Broadcast = (event: NodeProgressEvent & { kind?: string }) => void;
 
@@ -83,7 +84,7 @@ function loraFor(lib: Library, character: LibraryCharacter): ComicLora | undefin
 /**
  * Mount the **Character System** routes: per-character design-study generation,
  * refine, curation (patch/select/star) and deletion. Shares the comic run
- * plumbing — runId + the common cancel registry, "*" bracket events, WS preview
+ * plumbing — runId + the common RunHost, "*" bracket events, WS preview
  * routing by node id — so study generations stream and cancel exactly like
  * frames. All persistence goes through the LibraryStore's locked study
  * primitives, so a run's write-back never races a user edit.
@@ -92,10 +93,10 @@ export function registerStudyRoutes(
   app: Hono,
   rt: Runtime,
   broadcast: Broadcast,
-  runs: Map<string, AbortController>,
+  runHost: RunHost,
 ): void {
-  /** Run a compiled study graph with the shared cancel/bracket plumbing and
-   *  collect each node's produced image hash (streamed hashes as fallback, so a
+  /** Run a compiled study graph with the shared bracket plumbing and collect
+   *  each node's produced image hash (streamed hashes as fallback, so a
    *  cancelled run still persists what finished). */
   const runStudyGraph = async (
     graph: ReturnType<typeof compileStudyRun>,
@@ -103,33 +104,20 @@ export function registerStudyRoutes(
     quality: "preview" | "final" | undefined,
   ) => {
     const runId = randomUUID();
-    const ac = new AbortController();
-    runs.set(runId, ac);
     broadcast({ runId, nodeId: "*", status: "running", at: new Date().toISOString() });
 
-    const produced = new Map<string, string>();
-    const wanted = new Set(nodeIds);
-    let result;
-    try {
-      result = await rt.executor.run(graph, {
-        runId,
-        services: rt.services,
-        quality,
-        emit: (e) => {
-          if (wanted.has(e.nodeId) && e.previewHash) produced.set(e.nodeId, e.previewHash);
-          broadcast(e);
-        },
-        signal: ac.signal,
-      });
-    } finally {
-      runs.delete(runId);
-    }
+    const result = await runHost.run(runId, {
+      graph,
+      quality,
+      emit: broadcast,
+    });
+    const produced = result.produced;
 
     // Prefer the authoritative run result; keep streamed hashes for early stops.
     for (const nodeId of nodeIds) {
       const hash = (result.nodes.get(nodeId)?.outputs?.image as { hash?: string } | undefined)
         ?.hash;
-      if (hash) produced.set(nodeId, hash);
+      if (hash) produced[nodeId] = hash;
     }
 
     broadcast({
@@ -184,7 +172,7 @@ export function registerStudyRoutes(
     const { result, produced } = await runStudyGraph(graph, nodeIds, req.quality);
 
     const variants = nodeIds.flatMap((nodeId, i) => {
-      const hash = produced.get(nodeId);
+      const hash = produced[nodeId];
       return hash ? [{ hash, seed: seed + i }] : [];
     });
     const saved = await rt.library.appendStudyVariants(characterId, study.id, variants);
@@ -228,7 +216,7 @@ export function registerStudyRoutes(
     const nodeId = studyNodeId(studyId, "edit");
     const { result, produced } = await runStudyGraph(graph, [nodeId], req.quality);
 
-    const hash = produced.get(nodeId);
+    const hash = produced[nodeId];
     const saved = hash
       ? await rt.library.appendStudyVariants(characterId, studyId, [{ hash, seed }])
       : await rt.library.updateStudy(characterId, studyId, (s) => s);

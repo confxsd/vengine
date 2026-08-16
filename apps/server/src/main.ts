@@ -12,12 +12,14 @@ import {
   type TrainingProgressEvent,
 } from "@vengine/shared";
 import { createRuntime, modelManifest, nodeManifest } from "./runtime.js";
+import { NodeRunHost } from "./node-run-host.js";
 import { registerComicRoutes } from "./comics.js";
 import { registerAssistRoutes } from "./assist.js";
 import { registerDraftRoutes } from "./draft.js";
 import { registerLibraryRoutes } from "./library.js";
 import { registerSceneRoutes } from "./scenes.js";
 import { registerStudyRoutes } from "./studies.js";
+import { TrainingService } from "./training.js";
 
 // Load secrets from a .env file (server cwd, then up to the repo root) into
 // process.env before anything reads a key. Real env vars always take precedence.
@@ -61,15 +63,16 @@ app.get("/api/health", (c) => c.json({ ok: true }));
 app.get("/api/models", (c) => c.json(modelManifest(rt.providers)));
 app.get("/api/nodes", (c) => c.json(nodeManifest(rt.registry)));
 
-// App-wide in-flight run registry: every generation (comic frames, edits, study
-// runs) registers here so the one cancel endpoint can stop any paid run.
-const runs = new Map<string, AbortController>();
+// App-wide in-flight run registry: the RunHost owns abort controllers and
+// executes every generation (comic frames, edits, study runs, generic graphs),
+// so the one cancel endpoint can stop any paid run.
+const runHost = new NodeRunHost(rt);
 
 // Comic Studio: project CRUD, snapshots, compile-and-run, asset upload.
-registerComicRoutes(app, rt, broadcast, runs);
+registerComicRoutes(app, rt, broadcast, runHost);
 
 // Character System: per-character design studies (generate / refine / curate).
-registerStudyRoutes(app, rt, broadcast, runs);
+registerStudyRoutes(app, rt, broadcast, runHost);
 
 // AI text assist: optimize/enrich/fix prompts and prose fields.
 registerAssistRoutes(app, rt);
@@ -88,7 +91,9 @@ rt.library
   .catch((err) => console.error("style-pack seed failed:", err));
 // Re-attach poll loops to any job left mid-train by a previous process, so a
 // server restart never orphans a (still-running, already-paid) fal training job.
-training.resume().catch((err) => console.error("training resume failed:", err));
+if (training instanceof TrainingService) {
+  training.resume().catch((err) => console.error("training resume failed:", err));
+}
 
 const RunBody = z.object({
   graph: GraphDocumentSchema,
@@ -117,9 +122,8 @@ app.post("/api/run", async (c) => {
   const runId = randomUUID();
   broadcast({ runId, nodeId: "*", status: "running", at: new Date().toISOString() });
 
-  const result = await rt.executor.run(parsed.data.graph, {
-    runId,
-    services: rt.services,
+  const result = await runHost.run(runId, {
+    graph: parsed.data.graph,
     quality: parsed.data.quality,
     targets: parsed.data.targets,
     emit: (e) => broadcast(e),

@@ -11,6 +11,11 @@ import {
   deepseekModels,
 } from "@vengine/providers";
 import { AssetStore, ProjectStore, LibraryStore, FileOutputCache } from "@vengine/storage";
+import type {
+  AssetStoreLike,
+  LibraryStoreLike,
+  ProjectStoreLike,
+} from "@vengine/storage";
 import { createNodeRegistry } from "@vengine/nodes";
 
 /**
@@ -27,10 +32,10 @@ export interface Runtime {
   /** LoRA training adapters (character/style fine-tunes). */
   trainers: TrainingRegistry;
   registry: NodeRegistry;
-  assets: AssetStore;
-  projects: ProjectStore;
+  assets: AssetStoreLike;
+  projects: ProjectStoreLike;
   /** Cross-project library: recurring characters, style packs, trained LoRAs. */
-  library: LibraryStore;
+  library: LibraryStoreLike;
   executor: Executor;
   services: ExecutionServices;
 }
