@@ -1,0 +1,26 @@
+{
+  "name": "@vengine/worker",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "pnpm --filter @vengine/web build && wrangler deploy",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "clean": "rm -rf dist .turbo .wrangler"
+  },
+  "dependencies": {
+    "@vengine/core": "workspace:*",
+    "@vengine/nodes": "workspace:*",
+    "@vengine/providers": "workspace:*",
+    "@vengine/shared": "workspace:*",
+    "@vengine/storage": "workspace:*",
+    "hono": "^4.6.0",
+    "zod": "^3.24.0"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20260425.1",
+    "typescript": "^5.7.0",
+    "wrangler": "^4.0.0"
+  }
+}

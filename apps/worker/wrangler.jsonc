@@ -1,0 +1,30 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "vengine",
+  "account_id": "9da269cfd6196f2d0331f1a5cb8f1f85",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-04-25",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  "assets": {
+    "directory": "../../apps/web/dist",
+    "binding": "STATIC",
+    "not_found_handling": "single-page-application"
+  },
+  "routes": [{ "pattern": "vengine.rome.markets", "custom_domain": true }],
+  "observability": { "enabled": true },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "vengine-db",
+      "database_id": "0e9a26fc-4560-439e-b413-0b46c92a37b4",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "r2_buckets": [{ "binding": "MEDIA", "bucket_name": "vengine-media" }],
+  "durable_objects": {
+    "bindings": [{ "name": "FEED", "class_name": "FeedDo" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["FeedDo"] }],
+  "build": { "command": "pnpm --filter @vengine/web build" }
+}
