@@ -16,7 +16,14 @@
  * `segmentRegions` is the pure algorithm (raw mask in, boxes out) and is unit-tested;
  * `analyzeSheet`/`cropRegion`/`cropPreview` are the sharp-backed wrappers.
  */
-import sharp from "sharp";
+import { isWorkerRuntime } from "@vengine/shared";
+
+/** sharp is native (libvips) — resolved at runtime, kept out of worker bundles. */
+async function loadSharp(): Promise<typeof import("sharp")> {
+  const specifier = "sharp";
+  const mod = (await import(specifier)) as { default?: typeof import("sharp") };
+  return mod.default ?? (mod as unknown as typeof import("sharp"));
+}
 
 /** A crop rectangle in **full-resolution sheet pixels**. */
 export interface Box {
@@ -267,6 +274,10 @@ export async function analyzeSheet(
   bytes: Uint8Array,
   opts: SegmentOpts = {},
 ): Promise<{ width: number; height: number; regions: SheetRegion[] }> {
+  if (isWorkerRuntime()) {
+    throw new Error("sheet tools require the local Node server (sharp/libvips).");
+  }
+  const sharp = await loadSharp();
   const meta = await sharp(bytes).rotate().metadata();
   const W = meta.width ?? 0;
   const H = meta.height ?? 0;
@@ -309,6 +320,10 @@ export async function cropRegion(
   box: Box,
   opts: { maxSize?: number; quality?: number } = {},
 ): Promise<Uint8Array> {
+  if (isWorkerRuntime()) {
+    throw new Error("sheet tools require the local Node server (sharp/libvips).");
+  }
+  const sharp = await loadSharp();
   const meta = await sharp(bytes).rotate().metadata();
   const clamped = clampBox(box, meta.width ?? 0, meta.height ?? 0);
   if (!clamped) throw new Error("crop box is outside the image");

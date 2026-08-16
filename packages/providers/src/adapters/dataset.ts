@@ -1,4 +1,4 @@
-import sharp from "sharp";
+import { isWorkerRuntime } from "@vengine/shared";
 import type { TrainingExample } from "../types.js";
 
 /**
@@ -18,6 +18,13 @@ const MAX_EDGE = 1024;
 const JPEG_QUALITY = 90;
 /** Soft ceiling on the base64 archive; beyond this fal-storage upload is the right tool. */
 const MAX_DATA_URI_BYTES = 12 * 1024 * 1024;
+
+/** sharp is native (libvips) — resolved at runtime, kept out of worker bundles. */
+async function loadSharp(): Promise<typeof import("sharp")> {
+  const specifier = "sharp";
+  const mod = (await import(specifier)) as { default?: typeof import("sharp") };
+  return mod.default ?? (mod as unknown as typeof import("sharp"));
+}
 
 /** Zero-pad an index to a stable, sortable file stem (0001, 0002, …). */
 function stem(i: number): string {
@@ -133,6 +140,7 @@ function concat(parts: Uint8Array[]): Uint8Array {
  * doesn't blacken transparent reference-sheet crops.
  */
 async function normalizeImage(bytes: Uint8Array): Promise<Uint8Array> {
+  const sharp = await loadSharp();
   const out = await sharp(Buffer.from(bytes))
     .rotate() // honor EXIF orientation before stripping metadata
     .resize({ width: MAX_EDGE, height: MAX_EDGE, fit: "inside", withoutEnlargement: true })
@@ -142,23 +150,52 @@ async function normalizeImage(bytes: Uint8Array): Promise<Uint8Array> {
   return new Uint8Array(out);
 }
 
+/** File extension for a raw (untransformed) example, so fal can decode the zip entry. */
+function extensionFor(mime: string): string {
+  switch (mime) {
+    case "image/jpeg":
+    case "image/jpg":
+      return "jpg";
+    case "image/png":
+      return "png";
+    case "image/webp":
+      return "webp";
+    case "image/gif":
+      return "gif";
+    default:
+      return "img";
+  }
+}
+
+export interface BuildDatasetOptions {
+  /**
+   * Downscale + re-encode images to bounded JPEGs before packing. Defaults to
+   * true on the local server, false on Workers (no sharp there — raw bytes are
+   * packed as-is, which fal's trainers accept).
+   */
+  transform?: boolean;
+}
+
 /**
  * Build the inline dataset archive for a training run. Returns a `data:` URI plus
  * the encoded byte size (so callers can warn / fall back before submitting a 50MB
- * body). Each example becomes `NNNN.jpg`, and any caption becomes the same-named
- * `NNNN.txt` — fal's caption convention.
+ * body). Each example becomes `NNNN.jpg` (transformed) or `NNNN.<ext>` (raw), and
+ * any caption becomes the same-named `NNNN.txt` — fal's caption convention.
  */
 export async function buildDatasetDataUri(
   examples: TrainingExample[],
+  opts: BuildDatasetOptions = {},
 ): Promise<{ dataUri: string; bytes: number }> {
   if (examples.length === 0) throw new Error("Training dataset is empty.");
+
+  const transform = opts.transform ?? !isWorkerRuntime();
 
   const entries: ZipEntry[] = [];
   const enc = new TextEncoder();
   for (let i = 0; i < examples.length; i++) {
     const ex = examples[i]!;
-    const img = await normalizeImage(ex.bytes);
-    entries.push({ name: `${stem(i)}.jpg`, data: img });
+    const img = transform ? await normalizeImage(ex.bytes) : ex.bytes;
+    entries.push({ name: `${stem(i)}.${transform ? "jpg" : extensionFor(ex.mime)}`, data: img });
     const caption = ex.caption?.trim();
     if (caption) entries.push({ name: `${stem(i)}.txt`, data: enc.encode(caption) });
   }

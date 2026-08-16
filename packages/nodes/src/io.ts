@@ -1,11 +1,22 @@
 import { promises as fs } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
-import sharp from "sharp";
 import { z } from "zod";
+import { isWorkerRuntime } from "@vengine/shared";
 import type { NodeDefinition } from "@vengine/core";
 import type { AssetRef } from "@vengine/shared";
 import "./services.js";
+
+/**
+ * sharp is a native (libvips) addon and cannot run on Cloudflare Workers. The
+ * non-literal specifier keeps it out of worker bundles entirely; on the local
+ * Node server it resolves from node_modules at runtime.
+ */
+async function loadSharp(): Promise<typeof import("sharp")> {
+  const specifier = "sharp";
+  const mod = (await import(specifier)) as { default?: typeof import("sharp") };
+  return mod.default ?? (mod as unknown as typeof import("sharp"));
+}
 
 const MIME_BY_EXT: Record<string, string> = {
   ".png": "image/png",
@@ -29,6 +40,9 @@ export const loadImageNode: NodeDefinition<{ path: string }> = {
   outputs: [{ id: "image", type: "image", label: "Image" }],
   paramsSchema: z.object({ path: z.string().min(1) }),
   async execute({ params, ctx }) {
+    if (isWorkerRuntime()) {
+      throw new Error("io.load-image needs a local filesystem — upload via POST /api/assets instead.");
+    }
     const bytes = await fs.readFile(params.path);
     const ref = await ctx.services.assets.put(new Uint8Array(bytes), mimeFromPath(params.path));
     return { image: ref };
@@ -73,6 +87,9 @@ export type ExportParams = z.infer<typeof ExportParams>;
 /**
  * Export sink: writes an image asset to a user directory in the chosen format.
  * Not cacheable — it has a filesystem side effect outside the asset store.
+ * On Workers there is no filesystem: the node passes the image through and
+ * surfaces its hash, so comic runs (which target export nodes) still stream
+ * frame previews and return results.
  */
 export const exportNode: NodeDefinition<ExportParams> = {
   type: "io.export",
@@ -87,6 +104,19 @@ export const exportNode: NodeDefinition<ExportParams> = {
   paramsSchema: ExportParams,
   async execute({ nodeId, params, inputs, ctx }) {
     const ref = inputs.image as AssetRef;
+
+    if (isWorkerRuntime()) {
+      ctx.emit({
+        runId: ctx.runId,
+        nodeId,
+        status: "running",
+        previewHash: ref.hash,
+        at: new Date().toISOString(),
+      });
+      return { path: "", image: ref };
+    }
+
+    const sharp = await loadSharp();
     const buf = await ctx.services.assets.get(ref.hash);
     const out = await sharp(buf).toFormat(params.format).toBuffer();
 

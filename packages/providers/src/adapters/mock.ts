@@ -1,5 +1,12 @@
-import sharp from "sharp";
+import { isWorkerRuntime } from "@vengine/shared";
 import type { GeneratedAsset, ModelAdapter, NormalizedInput } from "../types.js";
+
+/** sharp is native (libvips) — resolved at runtime, kept out of worker bundles. */
+async function loadSharp(): Promise<typeof import("sharp")> {
+  const specifier = "sharp";
+  const mod = (await import(specifier)) as { default?: typeof import("sharp") };
+  return mod.default ?? (mod as unknown as typeof import("sharp"));
+}
 
 /** Tiny deterministic string hash (djb2) → used to pick colors from the prompt. */
 function hash(str: string): number {
@@ -51,6 +58,20 @@ export const mockModel: ModelAdapter = {
         fill="rgba(255,255,255,0.92)" text-anchor="middle" dominant-baseline="middle">${label}</text>
     </svg>`;
 
+    // On Workers sharp can't run, so serve the SVG directly — same visual, no
+    // native dependency. The default comic model is mock, so this keeps the
+    // deployed app usable offline (zero fal spend).
+    if (isWorkerRuntime()) {
+      return {
+        bytes: new TextEncoder().encode(svg),
+        mime: "image/svg+xml",
+        width,
+        height,
+        costUsd: this.estimateCost(input),
+        seed,
+      };
+    }
+    const sharp = await loadSharp();
     const png = await sharp(Buffer.from(svg)).png().toBuffer();
 
     return {

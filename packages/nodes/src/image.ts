@@ -7,7 +7,7 @@ import {
   type EditMode,
 } from "@vengine/shared";
 import type { ReferenceInput, NormalizedInput, ProviderRegistry } from "@vengine/providers";
-import type { AssetStore } from "@vengine/storage";
+import type { AssetStoreLike } from "@vengine/storage";
 import "./services.js";
 
 export const TextToImageParams = z.object({
@@ -80,7 +80,7 @@ function resolveRefSpecs(params: TextToImageParams): RefSpec[] {
 
 /** Load reference images from the asset store into provider ReferenceInputs. */
 async function loadReferences(
-  assets: AssetStore,
+  assets: AssetStoreLike,
   specs: RefSpec[],
 ): Promise<ReferenceInput[]> {
   if (!specs.length) return [];

@@ -1,4 +1,5 @@
 export * from "./ports.js";
+export * from "./env.js";
 export * from "./graph.js";
 export * from "./asset.js";
 export * from "./run.js";

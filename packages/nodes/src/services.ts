@@ -1,4 +1,4 @@
-import type { AssetStore } from "@vengine/storage";
+import type { AssetStoreLike } from "@vengine/storage";
 
 /**
  * Augment the core's ExecutionServices with the concrete services our nodes
@@ -7,7 +7,7 @@ import type { AssetStore } from "@vengine/storage";
  */
 declare module "@vengine/core" {
   interface ExecutionServices {
-    assets: AssetStore;
+    assets: AssetStoreLike;
     /** Resolve a provider's API key. Server-side only; never exposed to the client. */
     getApiKey?: (provider: string) => string | undefined;
   }
