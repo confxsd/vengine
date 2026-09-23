@@ -1,6 +1,8 @@
 import { useEffect } from "react";
-import { Calculator, Layers, Play, Plus, X } from "lucide-react";
+import { Link } from "react-router-dom";
+import { Calculator, Layers, Play, Plus, Telescope, X } from "lucide-react";
 import { useComic } from "../comicStore";
+import { useLibrary } from "../libraryStore";
 import { LibraryButton } from "../components/LibraryButton";
 import { Button, Input, Segmented, Select, ThemeToggle } from "../components/ui";
 import { ProjectHeader } from "./ProjectHeader";
@@ -85,6 +87,7 @@ export function ComicStudio() {
             onChange={(e) => setName(e.target.value)}
           />
         )}
+        <SeriesBadge seriesId={project?.seriesId} />
 
         <span className="font-mono text-[10px] text-faint">
           {SAVE_LABEL[saveState]}
@@ -203,5 +206,21 @@ export function ComicStudio() {
         </main>
       </div>
     </div>
+  );
+}
+
+/** Small chip linking an episode to its universe (hidden when standalone). */
+function SeriesBadge({ seriesId }: { seriesId?: string }) {
+  const series = useLibrary((s) => s.library.series.find((x) => x.id === seriesId));
+  if (!seriesId || !series) return null;
+  return (
+    <Link
+      to={`/series/${series.id}`}
+      title={`Episode of the universe “${series.name}”`}
+      className="inline-flex max-w-44 items-center gap-1 rounded-full border border-border bg-elevated/50 px-2 py-0.5 text-[10px] text-muted transition-colors hover:border-accent/60 hover:text-accent"
+    >
+      <Telescope className="h-3 w-3 shrink-0" />
+      <span className="truncate">{series.name || "Untitled universe"}</span>
+    </Link>
   );
 }

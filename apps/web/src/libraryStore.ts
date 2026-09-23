@@ -273,6 +273,7 @@ export const useLibrary = create<LibraryState>((set, get) => {
       const draft: LibraryCharacter = {
         id: newId(),
         name: name.trim() || "New character",
+        aliases: [],
         refHashes: [],
         description: "",
         palette: [],
@@ -481,6 +482,8 @@ export const useLibrary = create<LibraryState>((set, get) => {
         id: newId(),
         name: name.trim() || "New series",
         description: "",
+        concept: "",
+        keywords: [],
         projectIds: [],
         castIds: [],
       };

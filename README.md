@@ -19,6 +19,10 @@ visual canvas, and the engine only ever re-runs (and re-bills) the parts that ac
   cancel button that stops paid spend mid-run.
 - **Consistency** — locked seeds, reference/anchor images, and deterministic re-runs so a
   character or style stays the same across many generations.
+- **Universes (shared visual worlds)** — a series with its own style reference images, style
+  prompts, premise and a recurring cast (each with identity references + aliases). Paste a
+  story that mentions the cast and vengine detects the universe, wires its look and characters
+  into a new episode, and generates every frame — you only wrote the story.
 - **Comic Studio** — a storyboard layer for the primary use case: ~4-frame, 9:16 vertical
   art comics. Iterate per frame, roll variants, pick the best, pay only for what you regenerate.
 
@@ -76,6 +80,23 @@ pnpm build       # build all packages
 pnpm test        # vitest
 pnpm typecheck   # type-check the workspace
 pnpm lint
+```
+
+## One store, two front doors
+
+Local dev and the deployed site (`vengine.rome.markets`, Cloudflare D1 + R2) share the
+**same data**: the vite dev server proxies `/api` + `/ws` to the deployed worker by
+default, so anything you do at `localhost:5173` is reflected on the site and vice versa.
+Set `VITE_API_TARGET=http://localhost:5174` to work fully offline against the local
+server's own `~/.vengine` store instead.
+
+Helper scripts (read `SYNC_REMOTE_URL` / `SYNC_REMOTE_PASSWORD` from `.env`):
+
+```bash
+pnpm --filter @vengine/server migrate:remote   # one-time: push local data → remote (LWW)
+pnpm --filter @vengine/server seed:batman      # seed/reseed "The Batman" universe
+pnpm --filter @vengine/server story story.txt [--series the-batman] [--model fal/seedream-v4] [--no-generate]
+                                               # terminal composer: paste a story file → episode
 ```
 
 ## Status

@@ -1,13 +1,17 @@
-import { useEffect, useState } from "react";
-import { Check, FileText, Loader2, Sparkles, Trash2, Wand2, X } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { Check, Clapperboard, FileText, Loader2, Sparkles, Trash2, Wand2, X } from "lucide-react";
 import { toast } from "sonner";
-import type { DraftParse } from "@vengine/shared";
+import type { DraftParse, DraftSeriesRef } from "@vengine/shared";
 import { useComic } from "../comicStore";
+import { useLibrary } from "../libraryStore";
 import { api } from "../api";
 import { Button, Field, Textarea } from "../components/ui";
+import { cn } from "@/lib/cn";
 
 interface Props {
   onClose: () => void;
+  /** Pre-select a universe (the "New episode" entry point on a universe page). */
+  initialSeriesId?: string;
 }
 
 type Phase = "input" | "parsing" | "review";
@@ -21,26 +25,40 @@ frame2:
 hero: it's over.`;
 
 /**
- * Draft import. The author pastes a free-form story draft (frame markers,
+ * The story composer. The author pastes a free-form story (frame markers,
  * (parenthetical) directions, dialogue / inner-voice); a text model splits it into
- * beats and turns each into a prompt-ready visual description, which the author
- * reviews and edits before it's written into the project as frames. Nothing is
- * applied until "Add to comic" — the parse is a proposal, not a commit.
+ * beats and turns each into a prompt-ready visual description. When the story is
+ * recognized as part of a **universe** (series), the whole shared visual identity —
+ * style pack, cast with identity references, premise — is shown up front and wired
+ * into a NEW episode on apply, optionally generating every frame immediately.
+ * The old path (append the beats to the current comic) stays as a secondary action.
  */
-export function DraftModal({ onClose }: Props) {
+export function DraftModal({ onClose, initialSeriesId }: Props) {
   const applyDraft = useComic((s) => s.applyDraft);
+  const importStory = useComic((s) => s.importStory);
   const hasFrames = useComic((s) => (s.project?.frames.length ?? 0) > 0);
+  const seriesList = useLibrary((s) => s.library.series);
+  const styles = useLibrary((s) => s.library.styles);
+  const characters = useLibrary((s) => s.library.characters);
 
   const [phase, setPhase] = useState<Phase>("input");
   const [text, setText] = useState("");
   const [parse, setParse] = useState<DraftParse | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // The universe the parse ran with (explicit pick or auto-detection) + the one the
+  // author has currently chosen for apply (they can override without re-parsing;
+  // character mapping is alias-aware client-side, so a swap still lands the cast).
+  const [detected, setDetected] = useState<DraftSeriesRef | null>(null);
+  const [seriesId, setSeriesId] = useState<string | undefined>(initialSeriesId);
+  const [explicit, setExplicit] = useState<boolean>(!!initialSeriesId);
+  const [generate, setGenerate] = useState(true);
+  const [creating, setCreating] = useState(false);
   // Default: an empty project takes the draft wholesale (replace); a project with
   // frames appends, so an accidental import can't wipe existing work.
   const [replaceFrames, setReplaceFrames] = useState(!hasFrames);
   const [applyStory, setApplyStory] = useState(true);
 
-  const busy = phase === "parsing";
+  const busy = phase === "parsing" || creating;
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && !busy && onClose();
@@ -54,13 +72,18 @@ export function DraftModal({ onClose }: Props) {
     setError(null);
     setPhase("parsing");
     try {
-      const result = await api.parseDraft(trimmed);
+      const result = await api.parseDraft(trimmed, explicit ? seriesId : undefined);
       if (result.frames.length === 0) {
         setError("Couldn't split this into frames. Try marking beats (frame1, frame2…) or add more detail.");
         setPhase("input");
         return;
       }
-      setParse(result);
+      const { series, ...rest } = result;
+      setParse(rest);
+      setDetected(series);
+      // The parse's universe becomes the apply default (auto-detected or explicit);
+      // the author can still override it in the review footer.
+      if (!seriesId && series) setSeriesId(series.id);
       setPhase("review");
     } catch (err) {
       setError((err as Error).message);
@@ -77,13 +100,48 @@ export function DraftModal({ onClose }: Props) {
   const removeFrame = (i: number) =>
     setParse((prev) => (prev ? { ...prev, frames: prev.frames.filter((_, j) => j !== i) } : prev));
 
+  const activeSeries = useMemo(
+    () => seriesList.find((s) => s.id === seriesId),
+    [seriesList, seriesId],
+  );
+  const activePack = useMemo(
+    () => (activeSeries?.defaultStyleId ? styles.find((st) => st.id === activeSeries.defaultStyleId) : undefined),
+    [activeSeries, styles],
+  );
+  const activeCast = useMemo(
+    () => (activeSeries ? characters.filter((c) => activeSeries.castIds.includes(c.id)) : []),
+    [activeSeries, characters],
+  );
+  // Which universe characters this story actually uses (by canonical name or alias) —
+  // the avatars that will steer identity in the generated frames.
+  const storyCharacterNames = useMemo(
+    () => new Set((parse?.frames ?? []).flatMap((f) => f.characters).map((n) => n.trim().toLowerCase())),
+    [parse],
+  );
+  const castInStory = useMemo(
+    () =>
+      activeCast.filter((c) =>
+        [c.name, ...c.aliases].some((n) => n.trim().toLowerCase() && storyCharacterNames.has(n.trim().toLowerCase())),
+      ),
+    [activeCast, storyCharacterNames],
+  );
+
+  const createEpisode = async () => {
+    if (!parse || parse.frames.length === 0) return;
+    setCreating(true);
+    try {
+      await importStory(parse, { seriesId: activeSeries?.id, generate });
+    } finally {
+      setCreating(false);
+    }
+    onClose();
+  };
+
   const apply = () => {
     if (!parse || parse.frames.length === 0) return;
     applyDraft(parse, { replaceFrames, applyStory });
     toast.success(
-      `${replaceFrames ? "Imported" : "Added"} ${parse.frames.length} frame${
-        parse.frames.length === 1 ? "" : "s"
-      }`,
+      `${replaceFrames ? "Imported" : "Added"} ${parse.frames.length} frame${parse.frames.length === 1 ? "" : "s"}`,
     );
     onClose();
   };
@@ -99,8 +157,8 @@ export function DraftModal({ onClose }: Props) {
       >
         <div className="flex items-center justify-between">
           <h2 className="flex items-center gap-2 text-sm font-semibold text-text">
-            <FileText className="h-4 w-4 text-accent" />
-            Import a draft
+            <Clapperboard className="h-4 w-4 text-accent" />
+            New story
           </h2>
           <button onClick={() => !busy && onClose()} className="text-faint hover:text-text">
             <X className="h-4 w-4" />
@@ -111,7 +169,7 @@ export function DraftModal({ onClose }: Props) {
           <>
             <p className="text-xs text-faint">
               Paste your story as you wrote it — frame markers, (scene directions), dialogue and
-              inner-voice. It's split into frames, each with a ready visual prompt you can review.
+              inner-voice. It's split into frames, wired into the right universe, and generated.
             </p>
             <Textarea
               autoFocus
@@ -121,12 +179,121 @@ export function DraftModal({ onClose }: Props) {
               disabled={busy}
               className="min-h-64 resize-y font-mono text-xs leading-relaxed"
             />
+            {seriesList.length > 0 && (
+              <div className="flex flex-wrap items-center gap-2 text-[11px] text-faint">
+                <span>Universe:</span>
+                <select
+                  value={explicit ? (seriesId ?? "") : ""}
+                  disabled={busy}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    setExplicit(v !== "");
+                    setSeriesId(v || undefined);
+                  }}
+                  className="rounded-md border border-border bg-elevated/50 px-2 py-1 text-[11px] text-muted"
+                >
+                  <option value="">Auto-detect from the story</option>
+                  {seriesList.map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {s.name || "Untitled universe"}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
             {error && <p className="text-xs text-down">{error}</p>}
           </>
         )}
 
         {phase === "review" && parse && (
           <div className="flex min-h-0 flex-col gap-4 overflow-y-auto pr-1">
+            {/* The universe this story resolved to — the shared visual identity that
+                will be wired into the episode (style anchors + cast identity refs). */}
+            {(detected || seriesList.length > 0) && (
+              <div className="flex flex-col gap-3 rounded-lg border border-border bg-elevated/40 p-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex min-w-0 flex-wrap items-center gap-2">
+                    <span className="text-[10px] uppercase tracking-wide text-faint">Universe</span>
+                    <select
+                      value={seriesId ?? ""}
+                      onChange={(e) => setSeriesId(e.target.value || undefined)}
+                      className="max-w-56 rounded-md border border-border bg-surface px-2 py-1 text-[11px] text-text"
+                    >
+                      <option value="">None — standalone story</option>
+                      {seriesList.map((s) => (
+                        <option key={s.id} value={s.id}>
+                          {s.name || "Untitled universe"}
+                        </option>
+                      ))}
+                    </select>
+                    {detected && detected.id === seriesId && detected.matchedBy.length > 0 && (
+                      <span className="truncate text-[10px] italic text-faint" title={detected.matchedBy.join(", ")}>
+                        matched “{detected.matchedBy.slice(0, 4).join(", ")}
+                        {detected.matchedBy.length > 4 ? "…" : ""}”
+                      </span>
+                    )}
+                  </div>
+                </div>
+                {activeSeries && (
+                  <div className="flex flex-col gap-2">
+                    {activePack && activePack.anchors.length > 0 && (
+                      <div className="flex items-center gap-2">
+                        <span className="shrink-0 text-[10px] uppercase tracking-wide text-faint">Look</span>
+                        <div className="flex gap-1.5">
+                          {activePack.anchors.slice(0, 6).map((a) => (
+                            <img
+                              key={a.hash}
+                              src={api.thumbUrl(a.hash)}
+                              alt="style anchor"
+                              className="h-10 w-10 rounded-md border border-border object-cover"
+                            />
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    {activeCast.length > 0 && (
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="shrink-0 text-[10px] uppercase tracking-wide text-faint">Cast</span>
+                        {activeCast.map((c) => {
+                          const inStory = castInStory.some((d) => d.id === c.id);
+                          return (
+                            <span
+                              key={c.id}
+                              title={inStory ? `In this story${c.aliases.length ? ` (${c.aliases.join(", ")})` : ""}` : "Not in this story"}
+                              className={cn(
+                                "flex items-center gap-1.5 rounded-full border py-0.5 pl-0.5 pr-2 text-[11px]",
+                                inStory
+                                  ? "border-accent/60 bg-accent/10 text-accent"
+                                  : "border-border text-muted",
+                              )}
+                            >
+                              {c.refHashes[0] ? (
+                                <img
+                                  src={api.thumbUrl(c.refHashes[0])}
+                                  alt=""
+                                  className="h-5 w-5 rounded-full border border-border object-cover"
+                                />
+                              ) : (
+                                <span className="flex h-5 w-5 items-center justify-center rounded-full bg-elevated text-[9px]">
+                                  {c.name.slice(0, 1)}
+                                </span>
+                              )}
+                              {c.name}
+                            </span>
+                          );
+                        })}
+                      </div>
+                    )}
+                    {castInStory.length === 0 && activeCast.length > 0 && (
+                      <p className="text-[10px] text-faint">
+                        None of this universe's cast was detected — frames will still use its style.
+                      </p>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+
             {/* Story / settings the parser inferred (editable, opt-in on apply). */}
             <div className="flex flex-col gap-3 rounded-lg border border-border bg-elevated/40 p-3">
               <label className="flex items-center gap-2 text-[11px] font-medium text-muted">
@@ -186,7 +353,16 @@ export function DraftModal({ onClose }: Props) {
                         {f.characters.map((c, j) => (
                           <span
                             key={j}
-                            className="rounded-full bg-elevated px-1.5 py-0.5 text-[10px] text-muted"
+                            className={cn(
+                              "rounded-full px-1.5 py-0.5 text-[10px]",
+                              activeCast.some((a) =>
+                                [a.name, ...a.aliases].some(
+                                  (n) => n.trim().toLowerCase() === c.trim().toLowerCase(),
+                                ),
+                              )
+                                ? "bg-accent/15 text-accent"
+                                : "bg-elevated text-muted",
+                            )}
                           >
                             {c}
                           </span>
@@ -207,8 +383,19 @@ export function DraftModal({ onClose }: Props) {
           </div>
         )}
 
-        <div className="flex items-center justify-between border-t border-border pt-3">
+        <div className="flex items-center justify-between gap-3 border-t border-border pt-3">
           <div className="flex items-center gap-3 text-[11px] text-faint">
+            {phase === "review" && (
+              <label className="flex items-center gap-1.5">
+                <input
+                  type="checkbox"
+                  checked={generate}
+                  onChange={(e) => setGenerate(e.target.checked)}
+                  className="accent-accent"
+                />
+                Generate immediately
+              </label>
+            )}
             {phase === "review" && hasFrames && (
               <label className="flex items-center gap-1.5">
                 <input
@@ -227,10 +414,29 @@ export function DraftModal({ onClose }: Props) {
                 <Button variant="ghost" size="sm" onClick={() => setPhase("input")}>
                   Back
                 </Button>
-                <Button variant="accent" size="sm" onClick={apply} disabled={!parse?.frames.length}>
-                  <Check className="h-3.5 w-3.5" />
-                  {replaceFrames ? "Import" : "Add"} {parse?.frames.length} frame
-                  {parse?.frames.length === 1 ? "" : "s"}
+                <Button variant="ghost" size="sm" onClick={apply} disabled={!parse?.frames.length}>
+                  <FileText className="h-3.5 w-3.5" />
+                  Add to current comic
+                </Button>
+                <Button
+                  variant="accent"
+                  size="sm"
+                  onClick={() => void createEpisode()}
+                  disabled={!parse?.frames.length || creating}
+                >
+                  {creating ? (
+                    <>
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      Creating…
+                    </>
+                  ) : (
+                    <>
+                      <Sparkles className="h-3.5 w-3.5" />
+                      Create {activeSeries ? "episode" : "project"} · {parse?.frames.length} frame
+                      {parse?.frames.length === 1 ? "" : "s"}
+                      {generate ? " →" : ""}
+                    </>
+                  )}
                 </Button>
               </>
             ) : (
@@ -242,12 +448,12 @@ export function DraftModal({ onClose }: Props) {
                   {busy ? (
                     <>
                       <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                      Reading draft…
+                      Reading story…
                     </>
                   ) : (
                     <>
                       <Wand2 className="h-3.5 w-3.5" />
-                      Parse draft
+                      Read story
                     </>
                   )}
                 </Button>
@@ -260,7 +466,7 @@ export function DraftModal({ onClose }: Props) {
   );
 }
 
-/** Trigger that opens the draft-import modal. Hidden when the text model is off. */
+/** Trigger that opens the story composer. Hidden when the text model is off. */
 export function DraftImportButton() {
   const available = useComic((s) => s.draftAvailable);
   const [open, setOpen] = useState(false);
@@ -271,10 +477,10 @@ export function DraftImportButton() {
         type="button"
         onClick={() => setOpen(true)}
         className="inline-flex items-center gap-1.5 rounded-md border border-border bg-elevated/50 px-2 py-1 text-[11px] font-medium text-muted transition-colors hover:border-accent/60 hover:text-accent"
-        title="Paste a free-form draft and split it into frames"
+        title="Paste a story — it's split into frames, wired into its universe, and generated"
       >
         <Sparkles className="h-3 w-3" />
-        Import draft
+        Paste story
       </button>
       {open && <DraftModal onClose={() => setOpen(false)} />}
     </>

@@ -56,6 +56,9 @@ export const ComicCharacterSchema = z.object({
   /** Stable id frames reference via `frame.characterIds`. */
   id: z.string().min(1),
   name: z.string().default(""),
+  /** Alternate names this cast member answers to ("bruce", "batman" → Bruce Wayne);
+   * draft parsing maps parsed character names onto the cast via name OR alias. */
+  aliases: z.array(z.string()).default([]),
   /** Identity reference image hashes (most-distinctive first; models weight earlier
    *  refs higher). Only the first `MAX_REFS_PER_CHARACTER` are fed to any one frame so
    *  a big auto-split sheet can't monopolise the model's reference budget. */
@@ -360,6 +363,8 @@ export const ComicProjectSchema = z.object({
   story: z.string().default(""),
   /** Shared world/setting details. */
   settings: z.string().default(""),
+  /** Library series this project is an episode of (a shared visual universe). */
+  seriesId: z.string().optional(),
   /** Recurring characters reused across frames for identity consistency. */
   cast: z.array(ComicCharacterSchema).default([]),
   /**

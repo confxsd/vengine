@@ -1,6 +1,13 @@
 import type { Hono } from "hono";
 import type { ChatMessage } from "@vengine/providers";
-import { DraftParseRequestSchema, DraftParseSchema, type DraftParse } from "@vengine/shared";
+import {
+  DraftParseRequestSchema,
+  DraftParseSchema,
+  type DraftParse,
+  type DraftSeriesRef,
+  type Library,
+  type Series,
+} from "@vengine/shared";
 import type { Runtime } from "./runtime.js";
 
 /**
@@ -9,6 +16,13 @@ import type { Runtime } from "./runtime.js";
  * the whole thing into a structured, reviewable `DraftParse` — an overall story +
  * one frame per beat, each with a prompt-ready VISUAL description and the beat's
  * script kept as metadata. The client shows the parse for review, then applies it.
+ *
+ * When the draft resolves to a **series** (a shared visual universe — explicit
+ * `seriesId`, or auto-detected by keyword/cast-name hits), the parse becomes
+ * universe-aware: the system prompt carries the premise and the canonical cast, and
+ * the model must normalize `characters[]` to canonical names and keep each
+ * character's established look. Style still comes from the series' style pack at
+ * apply time — never from the parse.
  *
  * All prompt-craft lives in the config below (system prompt + the exact JSON shape we
  * ask for), so tuning the extraction is data, not control flow — mirroring the assist
@@ -46,6 +60,28 @@ Rules:
 - Keep the author's beat count: one frame per marked frame. If the draft has no markers, split on natural scene changes.
 - If a field is unknown, use an empty string or empty array. Always return valid JSON.`;
 
+/** Appended to the system prompt when the draft resolved to a series (universe). */
+const SERIES_PROMPT = (series: Series, cast: Library["characters"]): string => `
+
+This story belongs to the series "${series.name || "untitled"}" — a shared visual universe. Treat it as established canon:
+${series.concept || series.description || "(no premise recorded)"}
+
+Canonical cast (recurring characters of the universe)${
+  cast.length
+    ? ":\n" +
+      cast
+        .map((c) => {
+          const aka = c.aliases.length ? ` (also called: ${c.aliases.join(", ")})` : "";
+          return `- ${c.name}${aka}${c.description ? ` — ${c.description}` : ""}`;
+        })
+        .join("\n")
+    : ": none recorded."
+}
+
+Additional rules for this series:
+- In "characters", use each character's CANONICAL name above whenever the draft refers to them by any name or alias (e.g. "batman" → "Bruce Wayne"). One-off characters the universe doesn't know keep the draft's own name.
+- In "prompt", keep each canonical character's established look consistent with their description (build, features, wardrobe signature) while staging the new scene. Story-specific wardrobe notes from the draft's directions still apply.`;
+
 const USER_INSTRUCTION =
   "Parse this draft into the JSON object specified. Output JSON only.\n\nDRAFT:\n";
 
@@ -71,6 +107,65 @@ export function parseDraftReply(raw: string): DraftParse {
   return DraftParseSchema.parse({ story: cleaned });
 }
 
+/** Count whole-word, case-insensitive hits of one keyword in the text. Multi-word
+ * keywords (e.g. "wayne manor") match as a phrase. Returns the keyword when it hit. */
+function keywordHit(text: string, keyword: string): string | null {
+  const k = keyword.trim().toLowerCase();
+  if (!k) return null;
+  const escaped = k.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(?:^|[^a-z0-9])${escaped}(?:[^a-z0-9]|$)`, "i").test(text) ? k : null;
+}
+
+export interface ResolvedSeries {
+  series: Series;
+  /** The cast entries the series references (resolved from the library). */
+  cast: Library["characters"];
+  /** Signals that matched (keywords / cast names) — empty for an explicit pick. */
+  matchedBy: string[];
+}
+
+/**
+ * Resolve which universe (series) a draft belongs to: an explicit `seriesId` wins;
+ * otherwise every series is scored by keyword + cast-name/alias hits against the
+ * text (word-boundary, case-insensitive) and the best above zero is picked — with
+ * a tie broken by more cast presence, since named characters are the stronger signal.
+ */
+export function detectSeries(library: Library, text: string, seriesId?: string): ResolvedSeries | null {
+  const lower = text.toLowerCase();
+  if (seriesId) {
+    const series = library.series.find((s) => s.id === seriesId);
+    if (!series) return null;
+    const cast = library.characters.filter((c) => series.castIds.includes(c.id));
+    return { series, cast, matchedBy: [] };
+  }
+  let best: ResolvedSeries | null = null;
+  for (const series of library.series) {
+    const cast = library.characters.filter((c) => series.castIds.includes(c.id));
+    const matchedBy: string[] = [];
+    for (const keyword of series.keywords) {
+      const hit = keywordHit(lower, keyword);
+      if (hit) matchedBy.push(hit);
+    }
+    for (const c of cast) {
+      for (const name of [c.name, ...c.aliases]) {
+        const hit = keywordHit(lower, name);
+        if (hit) matchedBy.push(hit);
+      }
+    }
+    if (
+      matchedBy.length > 0 &&
+      (!best || matchedBy.length > best.matchedBy.length || (matchedBy.length === best.matchedBy.length && cast.length > best.cast.length))
+    ) {
+      best = { series, cast, matchedBy };
+    }
+  }
+  return best;
+}
+
+function seriesRef(resolved: ResolvedSeries | null): DraftSeriesRef | null {
+  return resolved ? { id: resolved.series.id, name: resolved.series.name, matchedBy: resolved.matchedBy } : null;
+}
+
 export function registerDraftRoutes(app: Hono, rt: Runtime): void {
   const resolveModel = () => rt.textProviders.get(DEFAULT_TEXT_MODEL) ?? rt.textProviders.list()[0];
 
@@ -81,7 +176,8 @@ export function registerDraftRoutes(app: Hono, rt: Runtime): void {
     return c.json({ available: !!(model && apiKey), model: model?.displayName ?? null });
   });
 
-  // Parse a raw draft into a structured, reviewable storyboard.
+  // Parse a raw draft into a structured, reviewable storyboard. Universe-aware:
+  // an explicit seriesId or a keyword/cast-name auto-detection steers the parse.
   app.post("/api/draft/parse", async (c) => {
     const parsed = DraftParseRequestSchema.safeParse(await c.req.json().catch(() => ({})));
     if (!parsed.success) return c.json({ error: parsed.error.message }, 400);
@@ -96,8 +192,18 @@ export function registerDraftRoutes(app: Hono, rt: Runtime): void {
       );
     }
 
+    let resolved: ResolvedSeries | null = null;
+    try {
+      resolved = detectSeries(await rt.library.get(), parsed.data.text, parsed.data.seriesId);
+    } catch {
+      /* a library read failure must not break parsing — just parse universe-less */
+    }
+
     const messages: ChatMessage[] = [
-      { role: "system", content: SYSTEM_PROMPT },
+      {
+        role: "system",
+        content: resolved ? SYSTEM_PROMPT + SERIES_PROMPT(resolved.series, resolved.cast) : SYSTEM_PROMPT,
+      },
       { role: "user", content: `${USER_INSTRUCTION}${parsed.data.text.trim()}` },
     ];
 
@@ -108,7 +214,7 @@ export function registerDraftRoutes(app: Hono, rt: Runtime): void {
         { messages, temperature: 0.3, maxTokens: 4096 },
         { apiKey },
       );
-      return c.json({ ...parseDraftReply(result.text), model: result.model });
+      return c.json({ ...parseDraftReply(result.text), model: result.model, series: seriesRef(resolved) });
     } catch (err) {
       return c.json({ error: err instanceof Error ? err.message : String(err) }, 502);
     }

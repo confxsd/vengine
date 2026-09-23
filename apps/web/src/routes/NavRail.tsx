@@ -1,12 +1,12 @@
 import { NavLink } from "react-router-dom";
 import {
-  BookOpen,
   Film,
   Focus,
   Images,
   Library as LibraryIcon,
   Orbit,
   Settings,
+  Telescope,
   Workflow,
   type LucideIcon,
 } from "lucide-react";
@@ -29,7 +29,7 @@ const ITEMS: NavItem[] = [
   { to: "/library", label: "Library", icon: LibraryIcon },
   { to: "/system", label: "Character System", icon: Orbit },
   { to: "/scenes", label: "Scenes", icon: Images },
-  { to: "/series", label: "Series", icon: BookOpen },
+  { to: "/series", label: "Universes", icon: Telescope },
 ];
 
 /**

@@ -5,6 +5,7 @@ import {
   frameIdFromNodeId,
   leadRef,
   styleReferences,
+  stylePackToComicStyle,
   DEFAULT_REFERENCE_WEIGHT,
   type ComicCharacter,
   type ComicLora,
@@ -16,6 +17,7 @@ import {
   type DraftParse,
 } from "@vengine/shared";
 import { api, connectProgress } from "./api";
+import { useLibrary } from "./libraryStore";
 import type { ModelInfo, NodeProgressEvent, NodeRunStatus, ProjectSummary, RunPlan } from "./types";
 
 /** Collision-resistant frame id (node ids + cache keys derive from it). */
@@ -32,6 +34,17 @@ export interface ApplyDraftOptions {
   replaceFrames: boolean;
   /** Overwrite the project's story/settings with the parsed values (when non-empty). */
   applyStory: boolean;
+}
+
+/** How a parsed story becomes a new episode (the autopilot). */
+export interface ImportStoryOptions {
+  /** Universe (series) the episode belongs to; omitted = a standalone project. */
+  seriesId?: string;
+  /** Start generating every frame right after wiring (default true). */
+  generate?: boolean;
+  /** Model override for the episode (e.g. a cheaper one); omitted = the universe's
+   * recommended model, else the project default. */
+  model?: string;
 }
 
 /** Inputs for an in-place frame edit (mirrors the server's EditBody, minus quality). */
@@ -87,6 +100,13 @@ interface ComicState {
    * cast). The single write-back for the draft-import flow.
    */
   applyDraft: (parse: DraftParse, opts: ApplyDraftOptions) => void;
+  /**
+   * The autopilot write-back: turn a parsed story into a NEW episode of a universe
+   * (series). Creates the project, wires the universe's style pack + cast (identity
+   * refs and aliases included), links the episode into the series, applies the parsed
+   * frames, saves, and (optionally) starts generating all of them immediately.
+   */
+  importStory: (parse: DraftParse, opts: ImportStoryOptions) => Promise<void>;
   removeFrame: (id: string) => void;
   /** Delete one generated image from a frame's history (server-authoritative). */
   removeVariant: (frameId: string, hash: string) => Promise<void>;
@@ -120,6 +140,7 @@ interface ComicState {
   addCastFromLibrary: (char: {
     id: string;
     name: string;
+    aliases?: string[];
     refHashes: string[];
     loraPath?: string;
     loraScale?: number;
@@ -178,6 +199,41 @@ let saveTail: Promise<void> = Promise.resolve();
 /** An edit happened during a run; flush it once the run finishes (saves are
  *  deferred while running so a client PUT can't clobber the run's write-back). */
 let dirtyDuringRun = false;
+
+/** Map parsed character names onto cast ids, matching name OR alias (case-insensitive;
+ *  canonical names win over aliases on collision). Unmatched names are dropped — a
+ *  frame with no matches keeps `characterIds` undefined (= whole cast). */
+function matchCast(cast: ComicCharacter[]): Map<string, string> {
+  const byName = new Map<string, string>();
+  for (const c of cast) {
+    for (const n of [c.name, ...c.aliases]) {
+      const key = n.trim().toLowerCase();
+      if (key && !byName.has(key)) byName.set(key, c.id);
+    }
+  }
+  return byName;
+}
+
+/** Turn a parsed draft into frame documents mapped onto the given cast. Pure — used
+ *  by both `applyDraft` (into the current project) and `importStory` (a new episode). */
+function draftToFrames(parse: DraftParse, cast: ComicCharacter[]): ComicFrame[] {
+  const byName = matchCast(cast);
+  return parse.frames.map((f) => {
+    const ids = [
+      ...new Set(
+        f.characters.map((n) => byName.get(n.trim().toLowerCase())).filter((id): id is string => !!id),
+      ),
+    ];
+    return {
+      id: newFrameId(),
+      prompt: f.prompt,
+      variants: [],
+      refHashes: [],
+      ...(f.script.trim() ? { script: f.script } : {}),
+      ...(ids.length ? { characterIds: ids } : {}),
+    };
+  });
+}
 
 export const useComic = create<ComicState>((set, get) => {
   /** Persist the latest project, serialized behind any in-flight save. Sends the
@@ -482,6 +538,83 @@ export const useComic = create<ComicState>((set, get) => {
       await refreshList();
     },
 
+    // The autopilot: paste → parse → this. Everything a universe defines (style pack
+    // with anchors, cast with identity refs + aliases, premise) lands on the new
+    // episode in one shot, the series learns about the episode, and generation can
+    // start immediately — the author only ever wrote the story.
+    importStory: async (parse, opts) => {
+      const { library, loraById, patchSeriesPack } = useLibrary.getState();
+      const series = opts.seriesId ? library.series.find((s) => s.id === opts.seriesId) : undefined;
+      if (opts.seriesId && !series) {
+        toast.error("Universe not found", { description: "It may have been deleted." });
+        return;
+      }
+      const pack = series?.defaultStyleId
+        ? library.styles.find((st) => st.id === series.defaultStyleId)
+        : undefined;
+      const castChars = series ? library.characters.filter((c) => series.castIds.includes(c.id)) : [];
+
+      try {
+        const created = await api.createComic(parse.title.trim() || "Untitled comic");
+        // Cast entries mirror `addCastFromLibrary` (id-keyed to the library, LoRA when
+        // a ready one exists) + aliases so future parses keep matching by any name.
+        const cast: ComicCharacter[] = castChars.map((c) => {
+          const lora = loraById(c.loraId);
+          return {
+            id: c.id,
+            name: c.name,
+            aliases: c.aliases,
+            refHashes: c.refHashes,
+            libraryId: c.id,
+            ...(lora && lora.status === "ready" && lora.loraUrl
+              ? { loraPath: lora.loraUrl, loraScale: 1, loraName: lora.name }
+              : {}),
+          };
+        });
+        // Bank the universe's images into the episode's reusable pool so they're
+        // visible/detachable there (idempotent by hash).
+        const banked = [...castChars.flatMap((c) => c.refHashes), ...(pack?.anchors ?? []).map((a) => a.hash)];
+        const style: ComicStyle = pack
+          ? stylePackToComicStyle(pack, created.style)
+          : created.style;
+        const episode: ComicProject = {
+          ...created,
+          ...(series ? { seriesId: series.id } : {}),
+          story: parse.story.trim() || created.story,
+          settings: parse.settings.trim() || created.settings,
+          cast,
+          library: [
+            ...created.library,
+            ...banked
+              .filter((h) => !created.library.some((a) => a.hash === h))
+              .map((hash) => ({ hash, label: "" })),
+          ],
+          style: opts.model ? { ...style, model: opts.model } : style,
+          frames: draftToFrames(parse, cast),
+        };
+
+        await api.saveComic(episode);
+        set({ project: episode, plan: null, liveStatus: {}, livePreview: {}, selectedFrameIds: [], saveState: "saved", status: "ready" });
+        await refreshList();
+
+        if (series && !series.projectIds.includes(episode.id)) {
+          await patchSeriesPack(series.id, { projectIds: [...series.projectIds, episode.id] });
+        }
+
+        toast.success(
+          series
+            ? `Episode created in “${series.name || "untitled"}”`
+            : "Project created",
+          { description: `${episode.frames.length} frame${episode.frames.length === 1 ? "" : "s"}${opts.generate === false ? "" : " — generating…"}` },
+        );
+        if (opts.generate !== false && episode.frames.length > 0) {
+          await runFrames(episode.frames.map((f) => f.id));
+        }
+      } catch (err) {
+        toast.error("Couldn't create the episode", { description: (err as Error).message });
+      }
+    },
+
     setName: (name) => mutate((p) => ({ ...p, name })),
     setStory: (story) => mutate((p) => ({ ...p, story })),
     setSettings: (settings) => mutate((p) => ({ ...p, settings })),
@@ -500,27 +633,11 @@ export const useComic = create<ComicState>((set, get) => {
       })),
     applyDraft: (parse, opts) =>
       mutate((p) => {
-        // Map each parsed beat's character names onto existing cast (case-insensitive).
-        // If none of a frame's names match, leave characterIds undefined (= whole cast),
-        // so a draft with no matching cast still behaves like a hand-added frame.
-        const byName = new Map(
-          p.cast.map((c) => [c.name.trim().toLowerCase(), c.id] as const).filter(([n]) => n),
-        );
-        const newFrames: ComicFrame[] = parse.frames.map((f) => {
-          const ids = [
-            ...new Set(
-              f.characters.map((n) => byName.get(n.trim().toLowerCase())).filter((id): id is string => !!id),
-            ),
-          ];
-          return {
-            id: newFrameId(),
-            prompt: f.prompt,
-            variants: [],
-            refHashes: [],
-            ...(f.script.trim() ? { script: f.script } : {}),
-            ...(ids.length ? { characterIds: ids } : {}),
-          };
-        });
+        // Map each parsed beat's character names onto existing cast (name or alias,
+        // case-insensitive). If none of a frame's names match, leave characterIds
+        // undefined (= whole cast), so a draft with no matching cast still behaves
+        // like a hand-added frame.
+        const newFrames = draftToFrames(parse, p.cast);
         const story = opts.applyStory && parse.story.trim() ? parse.story : p.story;
         const settings = opts.applyStory && parse.settings.trim() ? parse.settings : p.settings;
         return {
@@ -683,7 +800,10 @@ export const useComic = create<ComicState>((set, get) => {
       })),
 
     addCharacter: () =>
-      mutate((p) => ({ ...p, cast: [...p.cast, { id: newCharId(), name: "", refHashes: [] }] })),
+      mutate((p) => ({
+        ...p,
+        cast: [...p.cast, { id: newCharId(), name: "", aliases: [], refHashes: [] }],
+      })),
 
     // Link a Library character into the cast. Keyed by the library id so re-adding
     // refreshes its LoRA/refs in place (e.g. after training completes) without
@@ -693,6 +813,7 @@ export const useComic = create<ComicState>((set, get) => {
         const entry = {
           id: char.id,
           name: char.name,
+          aliases: char.aliases ?? [],
           refHashes: char.refHashes,
           libraryId: char.id,
           ...(char.loraPath

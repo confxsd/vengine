@@ -652,3 +652,55 @@ names onto existing cast (case-insensitive → `characterIds`), carries non-empt
 and appends or replaces frames. Gated on `draftAvailable` (probed in `init`); entry is the **Import draft**
 button in `ProjectHeader`'s Story header. Imported `script` shows as a collapsed disclosure under the
 prompt in `FrameCard`.
+
+## 19. Universes — shared visual worlds (implemented)
+
+A **universe** is the reuse layer over Studio + Library: one series record carrying a style pack
+(anchor images, theme/negative, model + dims), a premise (`concept`), auto-detect `keywords`, and a
+recurring **cast** — each character with identity reference images and name aliases. Uploaded once,
+applied to every episode: you paste a story, vengine detects the universe, wires look + cast, parses
+frames, and generates. The engine primitives (weighted anchors, identity refs leading every frame's
+reference list, per-character refs) already existed — this is the wiring and UX around them.
+
+**Schema (additive; D1 stores JSON blobs, no migrations).** `Series` gains `concept` + `keywords`;
+`LibraryCharacter` and `ComicCharacter` gain `aliases` ("bruce", "batman" → Bruce Wayne) — matching in
+`applyDraft`/`importStory` runs against names **and** aliases. `ComicProject` gains optional `seriesId`.
+`stylePackToComicStyle()` (`packages/shared/src/library.ts`) converts a universe's pack into a project's
+`ComicStyle` (anchors, theme, negative, dims, recommended model) while preserving the project's own
+seed/palette.
+
+**Series-aware parse.** `POST /api/draft/parse` accepts an optional `seriesId`; without one, the server
+scores every series' keywords and cast names/aliases against the pasted text (word-boundary,
+case-insensitive; most cast hits wins) and echoes `{ series: {id, name, matchedBy[]} | null }`. With a
+universe active, the DeepSeek system prompt gains its premise + canonical cast (names, aliases, visual
+descriptions) and must normalize `frames[].characters` to canonical names — style never comes from the
+parse, always from the universe pack.
+
+**Composer autopilot.** `DraftModal` was rebuilt as a story composer: universe select (auto-detected by
+default, overridable), a post-parse review with a **universe strip** (style anchor thumbs + cast avatars,
+in-story cast highlighted) so the consistency sources are visible, per-frame editors, and a primary
+**Create episode** CTA. `comicStore.importStory(parse, opts)` is the single write-back: creates the
+project, wires `seriesId` + pack + canonical cast (identity refs included), links the episode into the
+series, saves, and (default) kicks off `runFrames(all)` — Studio streams previews as usual. The old
+append-to-current-comic path remains as a secondary action.
+
+**Universe pages.** `/series` (nav: **Universes**) lists cards with anchor thumbs, cast avatars, keywords
+and episode counts. `/series/:id` (`UniversePage.tsx`) is the detail page: an **Identity** panel (concept
++ keyword tags), a **Look** panel (drag-drop style anchors, theme/negative, model + size), a **Cast**
+panel (per-character identity-ref dropzones, aliases, add-from-library) and an **Episodes** panel with a
+pre-wired **New episode** composer. Studio shows a `seriesId` badge linking back.
+
+**One store, two front doors.** The deployed worker (D1 + R2) is the single source of truth: the vite dev
+server proxies `/api` + `/ws` to `VITE_API_TARGET` (default `vengine.rome.markets`), so local dev and the
+site see the same data by construction; set it to `http://localhost:5174` for a fully offline session.
+Ops scripts (share `apps/server/scripts/remote-client.ts`; read `SYNC_REMOTE_URL` + `SYNC_REMOTE_PASSWORD`
+from `.env`, handle the admin login/cookie and idempotent asset upload; `--local` retargets any of them):
+`migrate:remote` (one-time push of local projects/library/assets, LWW by `updatedAt`),
+`seed:batman` (seeds "The Batman" — BTAS noir style pack + Bruce/Selina/Joker/Alfred cast — from the
+proven recipe in the user's own episode), and `story <file>` (terminal composer: parse → wire universe →
+PUT project → run; same wiring as `importStory`).
+
+**Model caveat.** Reference-consuming consistency (anchors + identity refs steering every frame) needs an
+edit-capable model — the universe default is `fal/nano-banana-pro`. `fal/seedream-v4` has no edit
+endpoint, so runs on it ride on the style text + cast descriptions alone (a deliberate cheap-draft
+mode); switching a project's model and re-running is one click.

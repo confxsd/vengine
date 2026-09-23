@@ -13,6 +13,7 @@ const CharacterSystemPage = lazy(() => import("./routes/CharacterSystemPage"));
 const SystemRedirect = lazy(() => import("./routes/SystemRedirect"));
 const ScenesPage = lazy(() => import("./routes/ScenesPage"));
 const SeriesPage = lazy(() => import("./routes/SeriesPage"));
+const UniversePage = lazy(() => import("./routes/UniversePage"));
 const SettingsPage = lazy(() => import("./routes/SettingsPage"));
 const FocusPage = lazy(() => import("./routes/FocusPage"));
 
@@ -38,6 +39,7 @@ export default function App() {
         <Route path="system/:id" element={<CharacterSystemPage />} />
         <Route path="scenes" element={<ScenesPage />} />
         <Route path="series" element={<SeriesPage />} />
+        <Route path="series/:id" element={<UniversePage />} />
         <Route path="settings" element={<SettingsPage />} />
       </Route>
     </Routes>

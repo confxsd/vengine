@@ -53,12 +53,25 @@ export type DraftParse = z.infer<typeof DraftParseSchema>;
 export const DraftParseRequestSchema = z.object({
   /** The raw, free-form draft text the author pasted. */
   text: z.string().min(1).max(DRAFT_MAX_INPUT),
+  /** Explicit universe (series) to parse within; omitted = auto-detect from the text. */
+  seriesId: z.string().optional(),
 });
 export type DraftParseRequest = z.infer<typeof DraftParseRequestSchema>;
+
+/** The universe a parse was resolved to (explicit or auto-detected). */
+export interface DraftSeriesRef {
+  id: string;
+  name: string;
+  /** Signals that matched the text (keywords / cast names) — shown so the author
+   * can see *why* this universe was picked and override it if wrong. */
+  matchedBy: string[];
+}
 
 export interface DraftParseResponse extends DraftParse {
   /** The model that produced the parse (for display/telemetry). */
   model: string;
+  /** The universe the parse used: explicit `seriesId`, auto-detected, or null. */
+  series: DraftSeriesRef | null;
 }
 
 export interface DraftConfig {

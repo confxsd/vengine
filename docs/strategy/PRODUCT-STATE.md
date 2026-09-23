@@ -1,4 +1,4 @@
-# Product State — what is actually built (2026-06-30)
+# Product State — what is actually built (2026-06-30; universes update 2026-09-23)
 
 A ground-truth map of vengine as it exists today, from a deep read of the code (not the
 roadmap aspirations). Use this to decide what to build next against the IP-universe goal.
@@ -11,8 +11,9 @@ vengine is a **working, polished single-creator engine for generating consistent
 9:16 vertical art comics**, plus a **production-ready LoRA-training pipeline** and a
 cross-project asset library. The generation/consistency core is genuinely strong. The gaps
 are all on the **"turn frames into a published, sellable artifact"** side: no lettering, no
-multi-page/page-assembly, no publish-ready export, minimal compositing, and the Library /
-Scenes / Series pages are stubbed.
+multi-page/page-assembly, no publish-ready export, and minimal compositing. (The shared-
+universe layer — series with style anchors + cast + story autopilot — has since been built;
+see the Universes section below.)
 
 In one line: **the factory works; the packaging line and the shop floor don't exist yet.**
 
@@ -50,6 +51,24 @@ In one line: **the factory works; the packaging line and the shop floor don't ex
   (unchanged frame = free), per-frame cost in the live WS stream.
 - **AI text-assist** on every prose field (polish/grammar/enrich/shorten) via Kimi/Moonshot,
   hidden when no key is set.
+- **Draft import**: paste free-prose story → text model parses reviewable frames (prompt +
+  kept-as-metadata script + character names).
+
+### Universes — shared visual worlds (`/series`)
+- A **series record is a universe**: style pack (weighted anchor images, theme/negative,
+  model + dims), premise (`concept`), auto-detect `keywords`, and a recurring **cast** whose
+  Library characters carry identity reference images + name aliases.
+- **Paste-a-story autopilot**: `POST /api/draft/parse` auto-detects the universe (keyword +
+  cast-alias scoring, explicit override wins) and injects its premise + canonical cast into
+  the parse prompt; the composer's **Create episode** wires series + pack + cast into a new
+  project and generates every frame unprompted. A terminal twin exists
+  (`pnpm --filter @vengine/server story <file>`).
+- **Universe pages**: `/series` index + `/series/:id` detail (Identity / Look / Cast /
+  Episodes panels; drag-drop style anchors and per-character identity refs). Studio shows a
+  series badge linking back.
+- **One store, two front doors**: the deployed Cloudflare worker (D1+R2) is the single
+  source of truth; the vite dev proxy targets it by default (`VITE_API_TARGET` to go
+  offline-local). `migrate:remote` / `seed:batman` ops scripts push local data up (LWW).
 
 ### Engine (`packages/core`)
 - DAG compile → topo sort → cycle/type validation → **content-addressed caching** (keys on
@@ -122,14 +141,13 @@ Ordered roughly by how much each blocks the IP-universe path.
    character consistency vs Nano Banana's $0.15; field/limit confirmation pending, not wired.
 
 ### Stubbed (schema/algorithm exists, UI/route missing)
-8. **Library / Character-detail / Scenes / Series / Settings pages** — all five routes are
-   placeholder stubs. The Library *data layer* (characters, styles, trainedLoras) and the
-   cross-project store are fully working behind the still-mounted slide-over; the full pages
-   aren't.
+8. **Library / Character-detail / Scenes / Settings pages** — the Library *data layer*
+   (characters, styles, trainedLoras) and the cross-project store are fully working behind
+   the still-mounted slide-over. (Series/Universes were promoted out of this list — fully
+   built, see above.)
 9. **Vision (image→text / Scenes)** — `SceneReference`/`SceneBreakdown` schema is defined but
    there is **no VisionAdapter, no route, no storage CRUD**. The "upload a sample scene → get
    a structured breakdown → regenerate in my style" loop is unbuilt.
-10. **Series** — schema only; no CRUD, no UI, no project→series back-reference.
 
 ### Out of scope today (by design, but relevant to the ambition)
 11. **No video / image-to-video / animation** — zero infra. Matters because Instagram Reels
@@ -156,7 +174,8 @@ Mapping the gaps onto that path, the highest-leverage build order:
 5. **Finish the Library + Character-detail pages and wire sheet-ingestion UI** (the cast is the
    IP; managing it well compounds over years).
 6. **Vision/Scenes** (turn reference photos / other art into your-style prompts — a strong
-   ideation accelerator) and **Series** (the durable home for a multi-chapter mythology).
+   ideation accelerator); **Series/universes are done** (the durable home for a multi-chapter
+   mythology — now seeded with "The Batman").
 7. Later: a **public reader site generator** + **store** (see BUSINESS-MODEL).
 
 See [README](./README.md) for how these sequence against the business and myth strategy.

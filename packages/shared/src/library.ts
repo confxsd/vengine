@@ -5,6 +5,7 @@ import {
   DEFAULT_HEIGHT,
   DEFAULT_NEGATIVE,
   DEFAULT_WIDTH,
+  type ComicStyle,
 } from "./comic.js";
 import { SceneReferenceSchema, SeriesSchema } from "./scene.js";
 import { CharacterStudySchema } from "./study.js";
@@ -113,6 +114,9 @@ export type TrainedLora = z.infer<typeof TrainedLoraSchema>;
 export const LibraryCharacterSchema = z.object({
   id: z.string().min(1),
   name: z.string().default(""),
+  /** Alternate names this character answers to ("bruce", "batman" → Bruce Wayne).
+   * Used both for draft-parse cast matching and series auto-detection. */
+  aliases: z.array(z.string()).default([]),
   /** Identity-establishing image hashes (most-distinctive first; models weight earlier higher). */
   refHashes: z.array(z.string().length(64)).default([]),
   /** Freeform identity text fed alongside the refs ("an exiled moon-goddess in rabbit form…"). */
@@ -162,6 +166,27 @@ export const StylePackSchema = z.object({
   updatedAt: isoString.optional(),
 });
 export type StylePack = z.infer<typeof StylePackSchema>;
+
+/**
+ * Apply a style pack to a project's `ComicStyle`: theme/negative/dims always come
+ * from the pack; the model comes from `recommendedModelId` when set (empty = keep
+ * the project's current model). Anchors/loras are copied as-is (weight/order are
+ * part of the look). Style packs don't carry a seed or palette — those stay with
+ * the project so each episode can lock its own.
+ */
+export function stylePackToComicStyle(pack: StylePack, current?: ComicStyle): ComicStyle {
+  return {
+    theme: pack.theme,
+    negative: pack.negative,
+    width: pack.width,
+    height: pack.height,
+    model: pack.recommendedModelId || current?.model || "mock/gradient",
+    seed: current?.seed ?? 42,
+    anchors: pack.anchors,
+    loras: pack.loras,
+    palette: current?.palette ?? [],
+  };
+}
 
 /**
  * Shipped style presets that **decouple the engine from comics**. Each carries its

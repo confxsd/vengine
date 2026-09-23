@@ -9,7 +9,10 @@
     "seed:yue": "tsx scripts/seed-yue.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
-    "clean": "rm -rf dist .turbo"
+    "clean": "rm -rf dist .turbo",
+    "migrate:remote": "tsx scripts/migrate-remote.ts",
+    "seed:batman": "tsx scripts/seed-batman.ts",
+    "story": "tsx scripts/ingest-story.ts"
   },
   "dependencies": {
     "@hono/node-server": "^1.13.0",

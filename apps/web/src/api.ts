@@ -148,7 +148,8 @@ export const api = {
 
   // ── Draft import ──────────────────────────────────────────────────────────────
   draftConfig: () => request("/api/draft/config").then(json<DraftConfig>),
-  parseDraft: (text: string) => post<DraftParseResponse>("/api/draft/parse", { text }),
+  parseDraft: (text: string, seriesId?: string) =>
+    post<DraftParseResponse>("/api/draft/parse", seriesId ? { text, seriesId } : { text }),
 
   // ── Cross-project Library ─────────────────────────────────────────────────────
   library: () => request("/api/library").then(json<Library>),

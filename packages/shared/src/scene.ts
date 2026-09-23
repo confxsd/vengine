@@ -68,14 +68,21 @@ export const SceneReferenceSchema = z.object({
 export type SceneReference = z.infer<typeof SceneReferenceSchema>;
 
 /**
- * A **series**: a durable grouping of projects that share a cast and a default
- * style, giving long-form work continuity across many chapters. Projects, cast and
+ * A **series** — a shared *visual universe*: a durable grouping of projects
+ * ("episodes") that share a cast, a default style and a premise. Projects, cast and
  * style are referenced by id (no copies), so editing the source updates the series.
+ * `concept` + `keywords` make pasting a story self-wiring: the draft parser matches
+ * the text against them to auto-detect which universe a new episode belongs to.
  */
 export const SeriesSchema = z.object({
   id: z.string().min(1),
   name: z.string().default(""),
   description: z.string().default(""),
+  /** The universe's premise/lore — fed to the draft parser (and shown in the UI)
+   * so parsed frame descriptions stay consistent with the established world. */
+  concept: z.string().default(""),
+  /** Words that mark a pasted story as belonging to this universe (auto-detect). */
+  keywords: z.array(z.string()).default([]),
   /** Comic project ids that belong to this series. */
   projectIds: z.array(z.string()).default([]),
   /** Library character ids that recur across the series. */

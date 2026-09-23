@@ -11,3 +11,4 @@ coverage/
 .vengine/
 *.sqlite
 *.sqlite-*
+.zcode/
