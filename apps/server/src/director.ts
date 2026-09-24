@@ -59,7 +59,7 @@ Semantics:
 - "updateSeries" edits the universe itself (premise/lore) — use sparingly and only when the author asks.
 
 Editing discipline (what the author relies on you to fix):
-- "prompt" must be a vivid, self-contained VISUAL description of the single drawing: subjects, expression and posture derived from the subtext, action, setting, composition. NO on-image text, speech bubbles, captions, logos.
+- "prompt" must be a vivid, self-contained VISUAL description of the single drawing, COMPOSED LIKE A PAINTER: a deliberate cinematic composition (dynamic framing, layered depth, purposeful negative space, staging that tells who holds power in the beat), precise figure work (each posture, weight, gesture, hand, gaze and facial expression derived from the subtext; distance and orientation between figures carrying the relationship), motivated lighting, and one or two symbolic objects that comment on the beat. Nothing generic — every element placed with intention. NO on-image text, speech bubbles, captions, logos.
 - "prompt" and "characterNames" contain ONLY what the camera actually sees in the beat. People, places or things merely mentioned, planned, remembered or discussed in dialogue do NOT appear — a fortune teller the couple only TALKS about visiting is not in the drawing until a beat actually shows her. Strip such leakage when you find it, and never cast a character who isn't on screen.
 - Derive mood from the story's THEME and emotional arc, not generic labels: "what kind of cat am I" is anxious self-interrogation, an interrupted diary is intimacy punctured by the mundane. Set "storyMood" once for the episode's prevailing tone, and per-frame "mood" only where a beat breaks from it (e.g. a final panel turning "quietly liberated, contemplative").
 - Keep each character's defining features consistent with the canon descriptions in the context; if the canon description is thin, improve it via "upsertCharacter".
@@ -276,8 +276,10 @@ export function registerDirectorRoutes(app: Hono, rt: Runtime): void {
 
     let replyText: string;
     try {
+      // Same headroom rationale as the draft route: rewritten frame prompts run
+      // long and reasoning-style models bill hidden tokens against the cap.
       const result = await model.complete(
-        { messages, temperature: 0.4, maxTokens: 4096 },
+        { messages, temperature: 0.4, maxTokens: 8192 },
         { apiKey },
       );
       replyText = result.text;

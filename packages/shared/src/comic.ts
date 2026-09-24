@@ -483,6 +483,18 @@ export const CAMERA_PRESETS: CameraPreset[] = [
   { label: "Extreme close-up", value: "extreme close-up" },
 ];
 
+/**
+ * The house craft directive appended to EVERY frame's composed prompt — the
+ * "contemporary art machine" baseline. A scene prompt alone ("Batman stands on a
+ * rooftop") reads as a caption; with this trailing it becomes an art-directed brief:
+ * deliberate cinematic composition, figure work where every posture/gesture/gaze is
+ * meaning, motivated light, symbolic staging. Applies to hand-written prompts too,
+ * so the house standard doesn't depend on the author (or the draft model) writing
+ * painterly prose. Mirrors the CRAFT rules in the draft/director system prompts.
+ */
+export const CRAFT_DIRECTIVE =
+  "Craft: compose this frame like a masterwork — deliberate cinematic staging (dynamic framing, layered depth, intentional negative space), figures whose posture, gesture, hands, gaze and facial expression carry the beat's meaning, motivated lighting, and symbolic objects or environmental detail placed with intention.";
+
 /** The per-frame camera/shot directive appended to a frame's prompt. Trailing period
  *  is normalised so a preset and a hand-typed phrase read identically. Empty → "". */
 export function cameraDirective(camera: string | undefined): string {
@@ -524,10 +536,14 @@ export function composeFramePrompt(project: ComicProject, frame: ComicFrame): st
     .filter((l) => !/^\s*\p{L}[\p{L} ]*:\s*$/u.test(l));
   const baseText = kept.join("\n").replace(/\n{3,}/g, "\n\n").trim();
 
+  // Lead the trailing directives with the house craft standard: every frame is
+  // art-directed like a masterwork, whatever wrote the scene text above.
+  const withCraft = baseText ? `${baseText}\n\n${CRAFT_DIRECTIVE}` : CRAFT_DIRECTIVE;
+
   // Append this frame's camera/shot framing (if set) right after the scene, so the
   // composition directive sits with the subject it frames. Empty → unchanged prompt.
   const camera = cameraDirective(frame.camera);
-  const withCamera = camera ? (baseText ? `${baseText}\n\n${camera}` : camera) : baseText;
+  const withCamera = camera ? `${withCraft}\n\n${camera}` : withCraft;
 
   // Fold in the emotional tone (if any): the frame's own mood, else the story's
   // prevailing mood. A dedicated directive before the palette, so tone is stated

@@ -18,6 +18,7 @@ import {
   referenceDirective,
   paletteDirective,
   cameraDirective,
+  CRAFT_DIRECTIVE,
   identityReferences,
   leadRef,
   styleReferences,
@@ -59,15 +60,29 @@ describe("composeFramePrompt", () => {
   it("supports an opt-in {story} token", () => {
     const p = project({ story: "a detective chases a ghost signal", promptTemplate: "{frame}. {story}" });
     expect(composeFramePrompt(p, p.frames[0]!)).toBe(
-      "a lone figure under a flickering streetlight. a detective chases a ghost signal",
+      `a lone figure under a flickering streetlight. a detective chases a ghost signal\n\n${CRAFT_DIRECTIVE}`,
     );
   });
 
   it("drops dangling labels when a token is empty (no 'Setting:' with no value)", () => {
     const p = project({ settings: "", style: { theme: "", model: "mock/gradient", seed: 1 } });
     const out = composeFramePrompt(p, p.frames[0]!);
-    expect(out).toBe("a lone figure under a flickering streetlight");
+    expect(out).toBe(`a lone figure under a flickering streetlight\n\n${CRAFT_DIRECTIVE}`);
     expect(out).not.toMatch(/Setting:|Style:/);
+  });
+
+  it("appends the house craft directive to every frame, after the scene, before the knobs", () => {
+    const p = project({
+      style: { theme: "oil", model: "mock/gradient", seed: 1, palette: ["#123456"] },
+      frames: [{ id: "a", prompt: "a plaza", camera: "wide shot" }],
+    });
+    const out = composeFramePrompt(p, p.frames[0]!);
+    expect(out).toContain(CRAFT_DIRECTIVE);
+    // Art direction sits with the scene it frames; camera and palette trail it.
+    const craftAt = out.indexOf(CRAFT_DIRECTIVE);
+    expect(craftAt).toBeGreaterThan(out.indexOf("a plaza"));
+    expect(craftAt).toBeLessThan(out.indexOf("Camera:"));
+    expect(craftAt).toBeLessThan(out.indexOf("Color palette:"));
   });
 
   it("keeps the section that is present when only one token is empty", () => {

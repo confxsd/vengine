@@ -38,7 +38,7 @@ const FIELD_PROMPTS: Record<AssistField, string> = {
   styleTheme:
     "This field is the VISUAL STYLE theme — medium, palette, linework, lighting, texture, and rendering applied to every frame. Describe the look, never the narrative.",
   framePrompt:
-    "This field is ONE frame's scene prompt — the concrete subject, action, composition, and camera for a single drawing. Lead with the subject; keep it a single vivid description.",
+    "This field is ONE frame's scene prompt — the art-directed description of a single drawing: subject, action, deliberate composition and camera, figure work (posture, gesture, gaze, expression) and light. Lead with the subject; keep it a single vivid description.",
   promptTemplate:
     "This field is the PROMPT TEMPLATE expanded for every frame. It MUST keep its {frame}, {settings}, {style}, and {story} tokens intact, each on a sensible line. Improve only the connective wording and structure around the tokens.",
   negativePrompt:
@@ -57,8 +57,20 @@ const MODE_PROMPTS: Record<AssistMode, string> = {
     "Remove redundancy to make it more concise. Keep the author's wording, meaning, and intent; add nothing.",
 };
 
+/** Field×mode extras appended after the task — the only place that nuance lives.
+ *  Enrich on a frame prompt may sharpen the art direction (the house standard:
+ *  deliberate composition, expressive figures, motivated light, symbolic detail)
+ *  as long as everything emerges from the scene the author wrote. */
+const FIELD_MODE_EXTRAS: Partial<Record<AssistField, Partial<Record<AssistMode, string>>>> = {
+  framePrompt: {
+    enrich:
+      "Enriching a frame prompt may sharpen its ART DIRECTION: composition (framing, depth, negative space), figure work (posture, gesture, gaze, facial expression), motivated lighting, and symbolic environmental detail — each emerging from the scene and subtext the author wrote. Still no new art style, medium, palette, or subjects.",
+  },
+};
+
 export function buildSystemPrompt(field: AssistField, mode: AssistMode): string {
-  return `${GLOBAL_SYSTEM}\n\nField: ${FIELD_PROMPTS[field]}\n\nTask: ${MODE_PROMPTS[mode]}`;
+  const extra = FIELD_MODE_EXTRAS[field]?.[mode];
+  return `${GLOBAL_SYSTEM}\n\nField: ${FIELD_PROMPTS[field]}\n\nTask: ${MODE_PROMPTS[mode]}${extra ? `\n\n${extra}` : ""}`;
 }
 
 export function buildUserMessage(text: string, context?: Record<string, string>): string {

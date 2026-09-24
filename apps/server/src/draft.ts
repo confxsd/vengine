@@ -46,7 +46,7 @@ Return ONLY a single JSON object — no markdown, no code fences, no commentary.
   "settings": string,         // the shared world/setting/era/atmosphere every frame inherits
   "frames": [                 // one entry per beat, in reading order
     {
-      "prompt": string,       // a vivid, prompt-ready VISUAL description of THIS single drawing: subject(s), their expression and posture (derived from what they say/feel), action, setting, composition and camera. Concrete and self-contained. NO on-image text, speech bubbles, or captions.
+      "prompt": string,       // an ART-DIRECTED, prompt-ready VISUAL description of THIS single drawing (see the "compose like a painter" rule): the subject(s) staged in a deliberate composition, with precise figure work, motivated lighting, symbolic environmental detail, and the camera. Concrete and self-contained. NO on-image text, speech bubbles, or captions.
       "script": string,       // this beat's original dialogue / inner-voice / narration, lightly cleaned, keeping speaker labels (e.g. "Inner voice: …", "Secretary: …"). This is the author's text, preserved — it is NOT drawn in the image.
       "characters": string[], // names of characters VISIBLY PRESENT in this frame (see the "visible only" rule)
       "thread": string,       // storyline label (see the "storylines" rule); "" when the draft has just one storyline
@@ -59,6 +59,7 @@ Return ONLY a single JSON object — no markdown, no code fences, no commentary.
 
 Rules:
 - Translate emotion and subtext into what is VISIBLE. If a character is devastated, the prompt shows the slumped shoulders, the tilted head, the stare at their hand — not the words.
+- COMPOSE LIKE A PAINTER: every frame is a constructed artwork, not a snapshot. Art-direct each "prompt" with intent — a strong COMPOSITION (dynamic framing for the 9:16 vertical, layered foreground/midground/background depth, purposeful negative space, staging that tells who holds power in the beat); precise FIGURE WORK (each body's posture, weight, hands, gesture, gaze direction and facial expression derived from the beat's subtext; the distance and orientation between figures carrying the relationship — facing away, towering, shrinking); MOTIVATED LIGHT (a source, direction and quality — chiaroscuro, rim light, neon spill, dusk haze — chosen to carry the mood); and SYMBOLIC STAGING (one or two meaningful objects or environmental details that comment on the scene). Nothing generic; every element placed with intention.
 - VISIBLE ONLY: "prompt" and "characters" contain ONLY what the camera actually sees in this beat. People, places or things that are merely mentioned, planned, remembered or discussed in the dialogue do NOT appear — if a couple is walking through a park and one says "let's visit the fortune teller", the drawing shows just the couple in the park: no fortune teller, no tent, no fortune-teller clothing or props. A mentioned thing materializes only in the later beat that actually shows it. "characters" lists only who is on screen in THIS frame.
 - STORYLINES: a story may weave several storylines — a framing story (someone telling or hearing a tale) and the story told inside it, a flashback, a dream, a cutaway — and they can interleave (frames 1 & 4 one storyline, frames 2 & 3 another). When they do: give each storyline a short, stable "thread" label ("" for a single-storyline draft); keep each thread's setting, staging and characters consistent within itself; and make the storylines read VISUALLY DISTINCT from each other — separate "mood" and "palette" per thread (e.g. the bar's sickly greens vs the memory's warm dusk). Contrast BETWEEN storylines, consistency WITHIN one — never change the art style or medium; contrast comes from palette, lighting and mood. When a beat literally continues an earlier frame's scene (same place, moments later), set "continues" to that frame's 0-based index — including a NON-ADJACENT frame of an interleaved storyline (frame 4 continuing frame 1). Omit "continues" when the beat starts its own scene.
 - Preserve the author's voice and content in "script" verbatim-ish; do not invent new dialogue.
@@ -93,6 +94,30 @@ const USER_INSTRUCTION =
   "Parse this draft into the JSON object specified. Output JSON only.\n\nDRAFT:\n";
 
 /**
+ * LLM-boundary leniency: models often write `"continues": -1` (or null) to mean
+ * "no link", but the schema only accepts non-negative integers — and one bad value
+ * would fail validation for the WHOLE parse, discarding every otherwise-good frame
+ * into the raw-text fallback. Drop any `continues` that isn't a non-negative
+ * integer before validating; `draftToFrames` links only what remains.
+ */
+function sanitizeContinues(json: unknown): unknown {
+  if (typeof json !== "object" || json === null) return json;
+  const obj = { ...(json as Record<string, unknown>) };
+  if (Array.isArray(obj.frames)) {
+    obj.frames = obj.frames.map((f) => {
+      if (typeof f !== "object" || f === null) return f;
+      const frame = { ...(f as Record<string, unknown>) };
+      const c = frame.continues;
+      if (c !== undefined && (typeof c !== "number" || !Number.isInteger(c) || c < 0)) {
+        delete frame.continues;
+      }
+      return frame;
+    });
+  }
+  return obj;
+}
+
+/**
  * Pull a `DraftParse` out of a model reply that is *supposed* to be JSON but may
  * arrive fenced or with stray prose. Strip code fences, isolate the first balanced
  * `{...}`, parse leniently (schema defaults fill any missing field). On total
@@ -105,7 +130,7 @@ export function parseDraftReply(raw: string): DraftParse {
   const end = cleaned.lastIndexOf("}");
   if (start >= 0 && end > start) {
     try {
-      const parsed = DraftParseSchema.safeParse(JSON.parse(cleaned.slice(start, end + 1)));
+      const parsed = DraftParseSchema.safeParse(sanitizeContinues(JSON.parse(cleaned.slice(start, end + 1))));
       if (parsed.success) return parsed.data;
     } catch {
       /* fall through to the raw-story fallback */
@@ -216,9 +241,11 @@ export function registerDraftRoutes(app: Hono, rt: Runtime): void {
 
     try {
       // Low temperature for faithful, deterministic structure; generous token budget
-      // so a multi-frame JSON is never truncated mid-object (which would break parsing).
+      // so a multi-frame JSON is never truncated mid-object (which would break
+      // parsing). Art-directed frame prompts run long, and reasoning-style models
+      // spend part of the completion budget on hidden tokens — headroom is cheap.
       const result = await model.complete(
-        { messages, temperature: 0.3, maxTokens: 4096 },
+        { messages, temperature: 0.3, maxTokens: 8192 },
         { apiKey },
       );
       return c.json({ ...parseDraftReply(result.text), model: result.model, series: seriesRef(resolved) });

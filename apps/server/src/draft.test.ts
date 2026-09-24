@@ -39,4 +39,23 @@ describe("parseDraftReply", () => {
     expect(p.story).toBe("frame1: a man stares at his hand.");
     expect(p.frames).toEqual([]);
   });
+
+  it("drops a sentinel 'continues': -1 (or null) instead of discarding the whole parse", () => {
+    // Models write -1 to mean "no link"; the schema rejects negatives, so one bad
+    // value must not fail validation for every otherwise-good frame.
+    const raw = JSON.stringify({
+      story: "a tale in three beats",
+      frames: [
+        { prompt: "the plaza", continues: -1 },
+        { prompt: "the crowd", continues: null },
+        { prompt: "the chase", continues: 0 },
+      ],
+    });
+    const p = parseDraftReply(raw);
+    expect(p.frames).toHaveLength(3);
+    expect(p.frames[0]!.continues).toBeUndefined();
+    expect(p.frames[1]!.continues).toBeUndefined();
+    // A valid non-negative link survives untouched.
+    expect(p.frames[2]!.continues).toBe(0);
+  });
 });
