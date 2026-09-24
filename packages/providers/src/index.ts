@@ -29,6 +29,7 @@ export {
   DEFAULT_DEEPSEEK_MODEL,
   type DeepSeekModelConfig,
 } from "./text/deepseek.js";
+export { openrouterModels, OPENROUTER_BASE_URL } from "./text/openrouter.js";
 
 // Vision layer (scene understanding: image → structured text).
 export * from "./vision/types.js";

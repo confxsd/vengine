@@ -31,7 +31,7 @@ import type { Runtime } from "./runtime.js";
  */
 
 /** Preferred text model; falls back to whatever is registered first. */
-const DEFAULT_TEXT_MODEL = "deepseek/chat";
+const DEFAULT_TEXT_MODEL = "openrouter/glm-5.3-flash";
 
 /** Output rules + the exact JSON shape we want back. Keep in lockstep with `DraftParseSchema`. */
 const SYSTEM_PROMPT = `You are a story editor and storyboard artist inside vengine, a studio for contemporary-art comics. Each comic is a short sequence of 9:16 vertical single drawings. CRITICAL: the images render NO text — no speech bubbles, captions, signage, or written words. Anything a character says or thinks must be conveyed VISUALLY (facial expression, body language, posture, gesture, staging, environment), never as text drawn in the image.

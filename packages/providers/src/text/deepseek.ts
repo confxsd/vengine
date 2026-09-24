@@ -6,10 +6,12 @@ import type {
 } from "./types.js";
 
 /**
- * DeepSeek text adapter. DeepSeek exposes an OpenAI-compatible
- * `/chat/completions` endpoint, so this adapter is a thin, config-driven mapping:
- * one `DeepSeekModelConfig` entry per model. Requires `ctx.apiKey` (resolved from
- * `DEEPSEEK_KEY` server-side); throws a clear error if missing so the UI can prompt.
+ * OpenAI-compatible chat-completion adapter. DeepSeek (and OpenRouter, see
+ * `openrouter.ts`) expose the same `/chat/completions` wire shape, so one
+ * config-driven mapping serves both: one `DeepSeekModelConfig` entry per model,
+ * with `provider` naming whose `${PROVIDER}_KEY` env var authenticates it.
+ * Requires `ctx.apiKey` (resolved server-side); throws a clear error if missing
+ * so the UI can prompt.
  */
 
 export const DEEPSEEK_BASE_URL = "https://api.deepseek.com/v1";
@@ -22,6 +24,12 @@ export interface DeepSeekModelConfig {
   /** Local adapter id, e.g. "deepseek/chat". */
   id: string;
   displayName: string;
+  /**
+   * Provider key naming the env var that holds the API key
+   * (`${provider.toUpperCase()}_KEY`). Defaults to "deepseek"; OpenRouter entries
+   * pass "openrouter" so they resolve `OPENROUTER_KEY`.
+   */
+  provider?: string;
   /** Remote model id (defaults to `DEFAULT_DEEPSEEK_MODEL`). */
   model?: string;
   /** Override the API base. */
@@ -39,15 +47,18 @@ interface ChatCompletionResponse {
 export function createDeepSeekModel(config: DeepSeekModelConfig): TextAdapter {
   const model = config.model ?? DEFAULT_DEEPSEEK_MODEL;
   const baseUrl = (config.baseUrl ?? DEEPSEEK_BASE_URL).replace(/\/+$/, "");
+  const provider = config.provider ?? "deepseek";
   return {
     id: config.id,
-    provider: "deepseek",
+    provider,
     displayName: config.displayName,
     model,
 
     async complete(input: TextCompletionInput, ctx: TextProviderCtx): Promise<TextCompletionResult> {
       if (!ctx.apiKey) {
-        throw new Error(`Missing DeepSeek API key for ${config.id}. Set DEEPSEEK_KEY in the server env.`);
+        throw new Error(
+          `Missing ${provider} API key for ${config.id}. Set ${provider.toUpperCase()}_KEY in the server env.`,
+        );
       }
       const doFetch = ctx.fetch ?? fetch;
       const res = await doFetch(`${baseUrl}/chat/completions`, {
@@ -65,12 +76,12 @@ export function createDeepSeekModel(config: DeepSeekModelConfig): TextAdapter {
         signal: ctx.signal,
       });
       if (!res.ok) {
-        throw new Error(`DeepSeek request failed (${res.status}): ${await res.text()}`);
+        throw new Error(`${provider} request failed (${res.status}): ${await res.text()}`);
       }
       const data = (await res.json()) as ChatCompletionResponse;
       const text = data.choices?.[0]?.message?.content?.trim();
       if (!text) {
-        throw new Error(data.error?.message ?? `DeepSeek returned an empty response for ${config.id}`);
+        throw new Error(data.error?.message ?? `${provider} returned an empty response for ${config.id}`);
       }
       return { text, model };
     },

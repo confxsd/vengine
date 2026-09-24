@@ -8,6 +8,7 @@ import {
   mockModel,
   falModels,
   falTrainers,
+  openrouterModels,
   deepseekModels,
 } from "@vengine/providers";
 import {
@@ -26,6 +27,7 @@ export type { Runtime };
 /** Worker secret/vars shape (satisfied by the full `Env` binding type). */
 export interface WorkerEnv {
   FAL_KEY?: string;
+  OPENROUTER_KEY?: string;
   DEEPSEEK_KEY?: string;
   FAL_VISION_MODEL?: string;
 }
@@ -35,8 +37,8 @@ export interface WorkerEnv {
  * Durable Object wake — registries are cheap, and no cross-request state is
  * kept (the D1 stores are optimistic-locking, so isolates can share safely).
  *
- * API keys come only from Worker secrets (`FAL_KEY`, `DEEPSEEK_KEY`) — never
- * from the client.
+ * API keys come only from Worker secrets (`FAL_KEY`, `OPENROUTER_KEY`,
+ * `DEEPSEEK_KEY`) — never from the client.
  */
 export function createRuntime(opts: {
   db: D1Like;
@@ -47,7 +49,9 @@ export function createRuntime(opts: {
     .register(mockModel)
     .registerAll(Object.values(falModels));
 
-  const textProviders = new TextProviderRegistry().registerAll(Object.values(deepseekModels));
+  const textProviders = new TextProviderRegistry()
+    .registerAll(Object.values(openrouterModels))
+    .registerAll(Object.values(deepseekModels));
 
   const visionProviders = new VisionProviderRegistry().register(
     createFalVisionModel({

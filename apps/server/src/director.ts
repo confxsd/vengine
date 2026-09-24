@@ -25,7 +25,7 @@ import type { Runtime } from "./runtime.js";
  * the deterministic applier live in `@vengine/shared` `director.ts`.
  */
 
-const DEFAULT_TEXT_MODEL = "deepseek/chat";
+const DEFAULT_TEXT_MODEL = "openrouter/glm-5.3-flash";
 
 const MessageBody = z.object({ text: z.string().min(1).max(DIRECTOR_MAX_INPUT) });
 

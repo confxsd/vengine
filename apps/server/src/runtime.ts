@@ -8,6 +8,7 @@ import {
   mockModel,
   falModels,
   falTrainers,
+  openrouterModels,
   deepseekModels,
 } from "@vengine/providers";
 import { AssetStore, ProjectStore, LibraryStore, FileOutputCache } from "@vengine/storage";
@@ -45,8 +46,13 @@ export function createRuntime(): Runtime {
     .register(mockModel)
     .registerAll(Object.values(falModels));
 
-  // Text models power AI text assist (DEEPSEEK_KEY); empty key just disables the feature.
-  const textProviders = new TextProviderRegistry().registerAll(Object.values(deepseekModels));
+  // Text/LLM adapters (prompt assist, draft parsing, director chat). OpenRouter
+  // GLM is the default (OPENROUTER_KEY); DeepSeek stays registered as a manual
+  // fallback — routes resolve by explicit model id, so a missing key just marks
+  // that entry unavailable rather than silently switching providers.
+  const textProviders = new TextProviderRegistry()
+    .registerAll(Object.values(openrouterModels))
+    .registerAll(Object.values(deepseekModels));
 
   // Vision models power scene understanding (FAL_KEY); the underlying VLM is
   // env-overridable so a stronger model can be swapped in without a code change.
