@@ -16,6 +16,7 @@ import { NodeRunHost } from "./node-run-host.js";
 import { registerComicRoutes } from "./comics.js";
 import { registerAssistRoutes } from "./assist.js";
 import { registerDraftRoutes } from "./draft.js";
+import { registerDirectorRoutes } from "./director.js";
 import { registerLibraryRoutes } from "./library.js";
 import { registerSceneRoutes } from "./scenes.js";
 import { registerStudyRoutes } from "./studies.js";
@@ -79,6 +80,9 @@ registerAssistRoutes(app, rt);
 
 // Draft import: parse a free-form story draft into a reviewable storyboard.
 registerDraftRoutes(app, rt);
+
+// Director chat: discuss an episode and apply structured story edits in one turn.
+registerDirectorRoutes(app, rt);
 
 // Cross-project Library (characters, style packs) + durable LoRA training.
 const training = registerLibraryRoutes(app, rt, broadcast);

@@ -64,6 +64,8 @@ interface ComicState {
   assistAvailable: boolean;
   /** Whether draft import is usable (same text model + key; gates the draft button). */
   draftAvailable: boolean;
+  /** Whether the director chat is usable (gates the Director button). */
+  directorAvailable: boolean;
   quality: "preview" | "final";
   /** True while any frame is generating (derived: `inFlight.length > 0`). */
   running: boolean;
@@ -87,6 +89,13 @@ interface ComicState {
 
   setName: (name: string) => void;
   setStory: (story: string) => void;
+  /** Set the story's prevailing mood (composed into every frame prompt). */
+  setStoryMood: (mood: string) => void;
+  /**
+   * Adopt a server-authoritative project wholesale (the director chat saves
+   * server-side; the client just takes the result — no autosave round-trip).
+   */
+  adoptServerProject: (project: ComicProject) => void;
   setSettings: (settings: string) => void;
   setTemplate: (template: string) => void;
   patchStyle: (patch: Partial<ComicStyle>) => void;
@@ -488,6 +497,7 @@ export const useComic = create<ComicState>((set, get) => {
     draftAvailable: false,
     quality: "final",
     running: false,
+    directorAvailable: false,
     inFlight: [],
     activeRunIds: [],
     plan: null,
@@ -524,6 +534,10 @@ export const useComic = create<ComicState>((set, get) => {
       api
         .draftConfig()
         .then((cfg) => set({ draftAvailable: cfg.available }))
+        .catch(() => undefined);
+      api
+        .directorConfig()
+        .then((cfg) => set({ directorAvailable: cfg.available }))
         .catch(() => undefined);
     },
 
@@ -617,6 +631,11 @@ export const useComic = create<ComicState>((set, get) => {
 
     setName: (name) => mutate((p) => ({ ...p, name })),
     setStory: (story) => mutate((p) => ({ ...p, story })),
+    setStoryMood: (mood) => mutate((p) => ({ ...p, storyMood: mood.trim() || undefined })),
+    adoptServerProject: (project) => {
+      set({ project, saveState: "saved" });
+      void refreshList();
+    },
     setSettings: (settings) => mutate((p) => ({ ...p, settings })),
     setTemplate: (promptTemplate) => mutate((p) => ({ ...p, promptTemplate })),
     patchStyle: (patch) => mutate((p) => ({ ...p, style: { ...p.style, ...patch } })),

@@ -12,6 +12,7 @@ import { registerComicRoutes } from "../../server/src/comics.js";
 import { registerStudyRoutes } from "../../server/src/studies.js";
 import { registerAssistRoutes } from "../../server/src/assist.js";
 import { registerDraftRoutes } from "../../server/src/draft.js";
+import { registerDirectorRoutes } from "../../server/src/director.js";
 import { registerLibraryRoutes } from "../../server/src/library.js";
 import { registerSceneRoutes } from "../../server/src/scenes.js";
 import { createRuntime, modelManifest, nodeManifest } from "./runtime.js";
@@ -108,6 +109,9 @@ function createApp(env: Env): Hono {
 
   // Draft import: parse a free-form story draft into a reviewable storyboard.
   registerDraftRoutes(app, rt);
+
+  // Director chat: discuss an episode and apply structured story edits in one turn.
+  registerDirectorRoutes(app, rt);
 
   // Seed the built-in style packs (Comic / Oil / Ink / Watercolor) once per
   // isolate when the library is still empty. Registered before the library

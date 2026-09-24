@@ -5,6 +5,9 @@ import type {
   AssistResponse,
   DraftConfig,
   DraftParseResponse,
+  DirectorConfig,
+  DirectorHistory,
+  DirectorTurnResult,
   ComicProject,
   GraphDocument,
   Library,
@@ -150,6 +153,13 @@ export const api = {
   draftConfig: () => request("/api/draft/config").then(json<DraftConfig>),
   parseDraft: (text: string, seriesId?: string) =>
     post<DraftParseResponse>("/api/draft/parse", seriesId ? { text, seriesId } : { text }),
+
+  // ── Director chat (discuss + structured story edits) ─────────────────────────
+  directorConfig: () => request("/api/director/config").then(json<DirectorConfig>),
+  directorHistory: (id: string) =>
+    request(`/api/comics/${id}/director`).then(json<DirectorHistory>),
+  directorSay: (id: string, text: string) =>
+    post<DirectorTurnResult>(`/api/comics/${id}/director`, { text }),
 
   // ── Cross-project Library ─────────────────────────────────────────────────────
   library: () => request("/api/library").then(json<Library>),

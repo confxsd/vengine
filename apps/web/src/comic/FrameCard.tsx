@@ -447,6 +447,19 @@ export function FrameCard({ frame, index, total }: Props) {
         />
       </div>
 
+      {/* This beat's emotional tone — composes into the prompt as a `Mood:` directive,
+          overriding the story's prevailing mood for this one frame. */}
+      <div className="flex items-center gap-1.5">
+        <span className="shrink-0 text-[10px] text-faint">mood</span>
+        <Input
+          className="h-7 flex-1 text-[11px]"
+          placeholder="this beat's tone (else the story mood)…"
+          value={frame.mood ?? ""}
+          onChange={(e) => patchFrame(frame.id, { mood: e.target.value || undefined })}
+          title="Emotional tone for this frame — derived from the subtext, fed to the image model"
+        />
+      </div>
+
       {/* The beat's script (dialogue / narration), kept from a draft import. Metadata
           only — never rendered into the image — so it lives in a collapsed disclosure. */}
       {frame.script !== undefined && (

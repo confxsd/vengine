@@ -277,6 +277,7 @@ export const useLibrary = create<LibraryState>((set, get) => {
         refHashes: [],
         description: "",
         palette: [],
+        eras: [],
         studies: [],
         tags: [],
       };

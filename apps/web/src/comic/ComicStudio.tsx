@@ -1,12 +1,13 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { Calculator, Layers, Play, Plus, Telescope, X } from "lucide-react";
+import { Calculator, Clapperboard, Layers, Play, Plus, Telescope, X } from "lucide-react";
 import { useComic } from "../comicStore";
 import { useLibrary } from "../libraryStore";
 import { LibraryButton } from "../components/LibraryButton";
 import { Button, Input, Segmented, Select, ThemeToggle } from "../components/ui";
 import { ProjectHeader } from "./ProjectHeader";
 import { FrameCard } from "./FrameCard";
+import { DirectorPanel } from "./DirectorPanel";
 
 const SAVE_LABEL: Record<string, string> = {
   idle: "",
@@ -42,7 +43,9 @@ export function ComicStudio() {
     saveState,
     status,
     setName,
+    directorAvailable,
   } = useComic();
+  const [directorOpen, setDirectorOpen] = useState(false);
   const selectedCount = selectedFrameIds.length;
 
   useEffect(() => {
@@ -60,6 +63,18 @@ export function ComicStudio() {
           </span>
         </div>
         <LibraryButton />
+
+        {directorAvailable && (
+          <Button
+            variant={directorOpen ? "accent" : "secondary"}
+            size="sm"
+            onClick={() => setDirectorOpen((v) => !v)}
+            title="Discuss and revise the story with the director — edits apply automatically"
+          >
+            <Clapperboard className="h-3.5 w-3.5" />
+            Director
+          </Button>
+        )}
 
         <div className="mx-1 h-5 w-px bg-border" />
 
@@ -204,6 +219,7 @@ export function ComicStudio() {
             <div className="text-sm text-faint">Loading…</div>
           )}
         </main>
+        {directorOpen && project && <DirectorPanel onClose={() => setDirectorOpen(false)} />}
       </div>
     </div>
   );

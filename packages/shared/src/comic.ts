@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { GraphDocumentSchema, type GraphDocument } from "./graph.js";
+import { DirectorMessageSchema } from "./director.js";
 
 /**
  * A comic project is the user-facing document for the Comic Studio: a main story
@@ -75,6 +76,14 @@ export const ComicCharacterSchema = z.object({
   loraName: z.string().optional(),
   /** Origin Library character id, so the cast entry can be re-synced to the library. */
   libraryId: z.string().optional(),
+  /**
+   * Which named life stage ("teen", "young", "mature"…) this episode's version of
+   * the character is in — see `CharacterEra` in library.ts. Informational on the
+   * cast entry: when the director sets an era, the era's identity refs are copied
+   * over `refHashes`, so the engine (references, LoRAs, prompts) needs no changes.
+   * Optional: existing cast entries need no migration.
+   */
+  eraLabel: z.string().optional(),
 });
 export type ComicCharacter = z.infer<typeof ComicCharacterSchema>;
 
@@ -159,6 +168,14 @@ export const ComicFrameSchema = z.object({
    * path need no migration.
    */
   script: z.string().optional(),
+  /**
+   * This frame's emotional tone — a short phrase ("wounded, withdrawing into
+   * himself") composed into the prompt as a dedicated `Mood:` directive. Overrides
+   * the project's `storyMood` when set, so one beat can break from the episode's
+   * prevailing tone. Derived from what the characters feel/do (visible subtext),
+   * not a generic label. Optional: existing frames need no migration.
+   */
+  mood: z.string().optional(),
   /** The currently selected/displayed image (a hash from `variants`). The artist
    *  picks it; a run sets it to the freshest generation. */
   resultHash: z.string().length(64).optional(),
@@ -361,6 +378,14 @@ export const ComicProjectSchema = z.object({
   name: z.string().default("Untitled comic"),
   /** The overall narrative arc — context for continuity across frames. */
   story: z.string().default(""),
+  /**
+   * The story's prevailing emotional tone — a short phrase derived from its theme
+   * and arc (e.g. "tender, melancholic, quietly hopeful"), composed into every
+   * frame's prompt as a `Mood:` directive unless the frame sets its own `mood`.
+   * Keeps mood in ONE inherited place instead of it being re-derived (and
+   * drifting) per frame. Optional: existing projects need no migration.
+   */
+  storyMood: z.string().optional(),
   /** Shared world/setting details. */
   settings: z.string().default(""),
   /** Library series this project is an episode of (a shared visual universe). */
@@ -376,6 +401,13 @@ export const ComicProjectSchema = z.object({
   style: ComicStyleSchema.default({}),
   promptTemplate: z.string().default(DEFAULT_TEMPLATE),
   frames: z.array(ComicFrameSchema).default([]),
+  /**
+   * Director-chat history (see `director.ts`): the running conversation with the
+   * story director, including the structured changes each turn applied. Lives on
+   * the project so snapshots cover it and it travels with the episode. Defaulted
+   * so pre-existing projects load unchanged.
+   */
+  director: z.array(DirectorMessageSchema).default([]),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
 });
@@ -438,6 +470,14 @@ export function cameraDirective(camera: string | undefined): string {
   return `Camera: ${c}.`;
 }
 
+/** The per-frame mood directive appended to a frame's prompt. Trailing period is
+ *  normalised like `cameraDirective`. Empty/undefined → "". */
+export function moodDirective(mood: string | undefined): string {
+  const m = (mood ?? "").trim().replace(/\.+$/, "");
+  if (!m) return "";
+  return `Mood: ${m}.`;
+}
+
 /**
  * Substitute the template tokens for one frame. This is the "engineered context":
  * deterministic, previewable, and identical to what the compiler bakes into the
@@ -468,11 +508,17 @@ export function composeFramePrompt(project: ComicProject, frame: ComicFrame): st
   const camera = cameraDirective(frame.camera);
   const withCamera = camera ? (baseText ? `${baseText}\n\n${camera}` : camera) : baseText;
 
+  // Fold in the emotional tone (if any): the frame's own mood, else the story's
+  // prevailing mood. A dedicated directive before the palette, so tone is stated
+  // once per frame regardless of the template and old projects need no migration.
+  const mood = moodDirective(frame.mood ?? project.storyMood);
+  const withMood = mood ? (withCamera ? `${withCamera}\n\n${mood}` : mood) : withCamera;
+
   // Fold in the fixed palette (if any) as a trailing style directive, before the
   // reference directive, so it applies to every frame regardless of the template and
   // old projects (no `{palette}` token needed). Empty palette → unchanged prompt.
   const palette = paletteDirective(project.style.palette);
-  const base = palette ? (withCamera ? `${withCamera}\n\n${palette}` : palette) : withCamera;
+  const base = palette ? (withMood ? `${withMood}\n\n${palette}` : palette) : withMood;
 
   // Append exactly one "how to use the reference images" directive, so an edit-capable
   // model knows whether a supplied image is a scene to continue, a layout to copy, or

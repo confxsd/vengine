@@ -220,6 +220,14 @@ function CharacterRow({ char }: { char: ComicCharacter }) {
           value={char.name}
           onChange={(e) => patchCharacter(char.id, { name: e.target.value })}
         />
+        {char.eraLabel && (
+          <span
+            className="shrink-0 rounded-full bg-accent-soft px-1.5 py-0.5 text-[10px] text-accent"
+            title={`This episode's ${char.name} is in the “${char.eraLabel}” era (set via the director)`}
+          >
+            {char.eraLabel}
+          </span>
+        )}
         <IconButton
           size="icon-sm"
           label="Remove character"
@@ -276,6 +284,7 @@ export function ProjectHeader() {
     project,
     models,
     setStory,
+    setStoryMood,
     setSettings,
     setTemplate,
     patchStyle,
@@ -374,6 +383,14 @@ export function ProjectHeader() {
             value={project.story}
             onValueChange={setStory}
             context={buildAssistContext(project, "story")}
+          />
+        </Field>
+        <Field label="Story mood">
+          <Input
+            placeholder="the episode's prevailing tone, e.g. tender, melancholic, quietly hopeful…"
+            value={project.storyMood ?? ""}
+            onChange={(e) => setStoryMood(e.target.value)}
+            title="Composed into every frame's prompt as a Mood: directive; a frame's own mood overrides it"
           />
         </Field>
         <Field label="Settings">

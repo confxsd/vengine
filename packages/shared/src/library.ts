@@ -104,12 +104,37 @@ export const TrainedLoraSchema = z.object({
 export type TrainedLora = z.infer<typeof TrainedLoraSchema>;
 
 /**
+ * A named **era** of a character — a life stage with its own look: "teen", "young",
+ * "mature" Bruce, aged Joker… Across a long-running universe the same character
+ * recurs at different ages/builds/wardrobes, and mixing them is a classic
+ * consistency failure. An era carries its own identity refs/palette/description, so
+ * an episode pins WHICH era its cast is in and gets that era's identity, while the
+ * canon character (name, aliases) stays one entry. Created/edited via the director
+ * chat or the library UI.
+ */
+export const CharacterEraSchema = z.object({
+  id: z.string().min(1),
+  /** Short stage label: "teen", "young", "mature", "post-branding"… */
+  label: z.string().min(1),
+  /** What changes at this stage — age-bearing defining features ("late teens, lean,
+   *  short-scraped knuckles, no facial hair yet…"). Fed to text models as canon. */
+  description: z.string().default(""),
+  /** This era's identity refs (most-distinctive first). Empty until generated/uploaded. */
+  refHashes: z.array(z.string().length(64)).default([]),
+  /** Palette anchors as text (hexes/labels) specific to this era, if the look shifts. */
+  palette: z.array(z.string()).default([]),
+  createdAt: isoString.optional(),
+  updatedAt: isoString.optional(),
+});
+export type CharacterEra = z.infer<typeof CharacterEraSchema>;
+
+/**
  * A recurring character. A superset of the per-project `ComicCharacter`: it adds an
  * identity `description`, a `palette` (e.g. Yue's fur/eye hex codes — text identity
- * locks alongside the image refs), and an optional `loraId` pointing at a trained
- * subject LoRA in this same library. A project's cast entry links here by
- * `libraryId`; `refHashes`/description can be overridden locally without editing the
- * shared character.
+ * locks alongside the image refs), named `eras` (life stages with their own look),
+ * and an optional `loraId` pointing at a trained subject LoRA in this same library.
+ * A project's cast entry links here by `libraryId`; `refHashes`/description can be
+ * overridden locally without editing the shared character.
  */
 export const LibraryCharacterSchema = z.object({
   id: z.string().min(1),
@@ -123,6 +148,8 @@ export const LibraryCharacterSchema = z.object({
   description: z.string().default(""),
   /** Palette anchors as text (hexes/labels) — strengthens identity beyond the images. */
   palette: z.array(z.string()).default([]),
+  /** Named life stages (teen / young / mature…) with their own look. See `CharacterEra`. */
+  eras: z.array(CharacterEraSchema).default([]),
   /** Optional trained subject LoRA for this character (id into `Library.trainedLoras`). */
   loraId: z.string().optional(),
   /**

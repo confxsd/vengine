@@ -9,3 +9,4 @@ export * from "./library.js";
 export * from "./study.js";
 export * from "./assist.js";
 export * from "./draft.js";
+export * from "./director.js";
