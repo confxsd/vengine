@@ -42,20 +42,27 @@ Return ONLY a single JSON object — no markdown, no code fences, no commentary.
 {
   "title": string,            // a short title inferred from the draft (or "")
   "story": string,            // 2-4 sentences: the overall narrative arc, as prose (NOT a shot list)
+  "storyMood": string,        // the story's prevailing emotional tone, derived from its THEME and arc (e.g. "tender, melancholic, quietly hopeful") — "" if unclear
   "settings": string,         // the shared world/setting/era/atmosphere every frame inherits
   "frames": [                 // one entry per beat, in reading order
     {
       "prompt": string,       // a vivid, prompt-ready VISUAL description of THIS single drawing: subject(s), their expression and posture (derived from what they say/feel), action, setting, composition and camera. Concrete and self-contained. NO on-image text, speech bubbles, or captions.
       "script": string,       // this beat's original dialogue / inner-voice / narration, lightly cleaned, keeping speaker labels (e.g. "Inner voice: …", "Secretary: …"). This is the author's text, preserved — it is NOT drawn in the image.
-      "characters": string[]  // names of characters visibly present in this frame
+      "characters": string[], // names of characters VISIBLY PRESENT in this frame (see the "visible only" rule)
+      "thread": string,       // storyline label (see the "storylines" rule); "" when the draft has just one storyline
+      "mood": string,         // this beat's tone — ONLY where it breaks from "storyMood" or separates an interleaved storyline; else ""
+      "palette": string[],    // 3-6 colors (hex or names) for this beat's storyline — ONLY when storylines need visual contrast; else []
+      "continues": number     // OPTIONAL: 0-based index of an earlier frame this beat continues (same scene, moments later) — including NON-ADJACENT frames of an interleaved storyline
     }
   ]
 }
 
 Rules:
 - Translate emotion and subtext into what is VISIBLE. If a character is devastated, the prompt shows the slumped shoulders, the tilted head, the stare at their hand — not the words.
+- VISIBLE ONLY: "prompt" and "characters" contain ONLY what the camera actually sees in this beat. People, places or things that are merely mentioned, planned, remembered or discussed in the dialogue do NOT appear — if a couple is walking through a park and one says "let's visit the fortune teller", the drawing shows just the couple in the park: no fortune teller, no tent, no fortune-teller clothing or props. A mentioned thing materializes only in the later beat that actually shows it. "characters" lists only who is on screen in THIS frame.
+- STORYLINES: a story may weave several storylines — a framing story (someone telling or hearing a tale) and the story told inside it, a flashback, a dream, a cutaway — and they can interleave (frames 1 & 4 one storyline, frames 2 & 3 another). When they do: give each storyline a short, stable "thread" label ("" for a single-storyline draft); keep each thread's setting, staging and characters consistent within itself; and make the storylines read VISUALLY DISTINCT from each other — separate "mood" and "palette" per thread (e.g. the bar's sickly greens vs the memory's warm dusk). Contrast BETWEEN storylines, consistency WITHIN one — never change the art style or medium; contrast comes from palette, lighting and mood. When a beat literally continues an earlier frame's scene (same place, moments later), set "continues" to that frame's 0-based index — including a NON-ADJACENT frame of an interleaved storyline (frame 4 continuing frame 1). Omit "continues" when the beat starts its own scene.
 - Preserve the author's voice and content in "script" verbatim-ish; do not invent new dialogue.
-- Do NOT invent a visual art style, medium, or palette — the author sets that elsewhere. Describe subject, staging, expression and camera only.
+- Do NOT invent a visual art style, medium, or palette for the whole draft — the author sets that elsewhere. (Per-storyline "palette" accents are the one exception, and only for interleaved storylines.) Describe subject, staging, expression and camera only.
 - Never write on-image text, signage, logos, or brand names into "prompt".
 - Keep the author's beat count: one frame per marked frame. If the draft has no markers, split on natural scene changes.
 - If a field is unknown, use an empty string or empty array. Always return valid JSON.`;

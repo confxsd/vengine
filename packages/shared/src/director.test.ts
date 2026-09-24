@@ -138,6 +138,52 @@ describe("applyDirectorChanges", () => {
     expect(out.log).toHaveLength(0);
   });
 
+  it("labels frames with storylines and per-thread palettes (null clears, [] keeps no-lock)", () => {
+    const p = project();
+    const out = applyDirectorChanges(p, library(), null, [
+      { op: "updateFrame", frameIndex: 0, thread: "joker's tale", palette: ["sickly green", "#2a4d2a"] },
+      { op: "updateFrame", frameIndex: 1, thread: "the fortune teller memory" },
+    ]);
+    expect(out.project.frames[0]!.thread).toBe("joker's tale");
+    expect(out.project.frames[0]!.palette).toEqual(["sickly green", "#2a4d2a"]);
+    expect(out.project.frames[1]!.thread).toBe("the fortune teller memory");
+    expect(out.project.frames[1]!.palette).toBeUndefined();
+
+    // null clears the thread back to the main storyline and the palette back to
+    // inheriting the episode's; an explicit [] is a deliberate no-lock and stays.
+    const cleared = applyDirectorChanges(out.project, library(), null, [
+      { op: "updateFrame", frameIndex: 0, thread: null, palette: null },
+    ]);
+    expect(cleared.project.frames[0]!.thread).toBeUndefined();
+    expect(cleared.project.frames[0]!.palette).toBeUndefined();
+
+    const unlocked = applyDirectorChanges(out.project, library(), null, [
+      { op: "updateFrame", frameIndex: 1, palette: [] },
+    ]);
+    expect(unlocked.project.frames[1]!.palette).toEqual([]);
+  });
+
+  it("addFrame carries the new frame's storyline treatment", () => {
+    const p = project();
+    const out = applyDirectorChanges(p, library(), null, [
+      {
+        op: "addFrame",
+        afterIndex: 2,
+        prompt: "the joker leans back, finishing his tale",
+        thread: "joker's tale",
+        mood: "smug, theatrical",
+        palette: ["sickly green"],
+        characterNames: ["joker"],
+      },
+    ]);
+    // "joker" matches no cast → frame keeps the whole cast; the rest still lands.
+    const frame = out.project.frames[3]!;
+    expect(frame.thread).toBe("joker's tale");
+    expect(frame.mood).toBe("smug, theatrical");
+    expect(frame.palette).toEqual(["sickly green"]);
+    expect(frame.characterIds).toBeUndefined();
+  });
+
   it("adds, moves and deletes frames; continuation links to the removed frame are cleared", () => {
     const p = project();
     const out = applyDirectorChanges(p, library(), null, [

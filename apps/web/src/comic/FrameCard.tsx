@@ -83,6 +83,11 @@ export function FrameCard({ frame, index, total }: Props) {
   const project = useComic((s) => s.project);
   const cast = project?.cast ?? [];
   const [showFinal, setShowFinal] = useState(false);
+  // Palette is edited as comma-separated text but stored as an array; a local buffer
+  // keeps typing separators natural, resynced whenever the frame's palette changes
+  // from outside (e.g. a director-chat turn adopts a new project document).
+  const [paletteText, setPaletteText] = useState((frame.palette ?? []).join(", "));
+  useEffect(() => setPaletteText((frame.palette ?? []).join(", ")), [frame.palette]);
   const [editing, setEditing] = useState(false);
   const [showRefPicker, setShowRefPicker] = useState(false);
   /** A frame with no explicit list shows the whole cast (undefined = all). */
@@ -233,6 +238,14 @@ export function FrameCard({ frame, index, total }: Props) {
           <span className="text-xs font-semibold text-muted">
             Frame {index + 1}
           </span>
+          {frame.thread && (
+            <span
+              className="max-w-24 truncate rounded-full bg-purple/15 px-1.5 py-0.5 text-[10px] text-purple"
+              title="Storyline this frame belongs to — threads get their own mood/palette look"
+            >
+              {frame.thread}
+            </span>
+          )}
         </div>
         <div className="flex items-center gap-0.5">
           <span
@@ -457,6 +470,38 @@ export function FrameCard({ frame, index, total }: Props) {
           value={frame.mood ?? ""}
           onChange={(e) => patchFrame(frame.id, { mood: e.target.value || undefined })}
           title="Emotional tone for this frame — derived from the subtext, fed to the image model"
+        />
+      </div>
+
+      {/* Storyline + palette — the levers for episodes that weave several storylines
+          (a framing story + the tale inside it). Frames of one thread share their
+          look; different threads read visually distinct via their own moods and
+          palettes, while the project's style theme keeps the art style shared. */}
+      <div className="flex items-center gap-1.5">
+        <span className="shrink-0 text-[10px] text-faint">thread</span>
+        <Input
+          className="h-7 flex-1 text-[11px]"
+          placeholder="storyline (blank = main)…"
+          value={frame.thread ?? ""}
+          onChange={(e) => patchFrame(frame.id, { thread: e.target.value || undefined })}
+          title="Narrative storyline this frame belongs to — group interleaved stories (frames 1 & 4 vs 2 & 3) and give each its own look"
+        />
+      </div>
+      <div className="flex items-center gap-1.5">
+        <span className="shrink-0 text-[10px] text-faint">palette</span>
+        <Input
+          className="h-7 flex-1 text-[11px]"
+          placeholder="this storyline's colors (else the project palette)…"
+          value={paletteText}
+          onChange={(e) => {
+            setPaletteText(e.target.value);
+            const list = e.target.value
+              .split(",")
+              .map((c) => c.trim())
+              .filter(Boolean);
+            patchFrame(frame.id, { palette: list.length ? list : undefined });
+          }}
+          title="Color accents for this frame's storyline — hex codes or names, comma-separated; overrides the project palette"
         />
       </div>
 

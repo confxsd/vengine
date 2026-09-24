@@ -178,11 +178,14 @@ export function buildAssistContext(
       break;
     case "framePrompt": {
       add("story", project.story);
+      add("story mood", project.storyMood);
       add("settings", project.settings);
       add("visual style", styleTheme);
       if (frame) {
         const i = project.frames.findIndex((f) => f.id === frame.id);
         if (i >= 0) add("frame position", `frame ${i + 1} of ${project.frames.length}`);
+        add("storyline", frame.thread);
+        add("frame mood", frame.mood);
         const ids = frame.characterIds;
         const cast = ids === undefined ? project.cast : project.cast.filter((c) => ids.includes(c.id));
         const names = cast.map((c) => c.name.trim()).filter(Boolean);

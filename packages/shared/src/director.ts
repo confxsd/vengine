@@ -52,6 +52,10 @@ export const DirectorChangeSchema = z.discriminatedUnion("op", [
     script: clearableString,
     camera: clearableString,
     mood: clearableString,
+    /** Storyline label; null clears back to the episode's main storyline. */
+    thread: clearableString,
+    /** Frame palette accents; null clears (inherits the project palette), [] drops the lock. */
+    palette: z.array(z.string()).nullable().optional(),
     /** null → whole cast (clears the subset); array → exactly those characters. */
     characterNames: z.array(z.string()).nullable().optional(),
     /** Link this frame as a continuation of the frame at that 0-based index. */
@@ -64,6 +68,8 @@ export const DirectorChangeSchema = z.discriminatedUnion("op", [
     prompt: z.string().default(""),
     script: z.string().optional(),
     mood: z.string().optional(),
+    thread: z.string().optional(),
+    palette: z.array(z.string()).optional(),
     characterNames: z.array(z.string()).default([]),
   }),
   z.object({ op: z.literal("deleteFrame"), frameIndex: index }),
@@ -345,6 +351,18 @@ export function applyDirectorChanges(
           f = { ...f, mood: change.mood ?? undefined };
           parts.push(change.mood ? `mood → “${change.mood}”` : "mood cleared");
         }
+        if (change.thread !== undefined) {
+          f = { ...f, thread: change.thread ?? undefined };
+          parts.push(change.thread ? `storyline → “${change.thread}”` : "storyline cleared");
+        }
+        if (change.palette !== undefined) {
+          f = { ...f, palette: change.palette ?? undefined };
+          parts.push(
+            change.palette
+              ? `palette → ${change.palette.join(", ")}`
+              : "palette cleared (inherits episode)",
+          );
+        }
         if (change.characterNames !== undefined) {
           if (change.characterNames === null) {
             f = { ...f, characterIds: undefined };
@@ -389,6 +407,8 @@ export function applyDirectorChanges(
           refHashes: [],
           ...(change.script?.trim() ? { script: change.script } : {}),
           ...(change.mood?.trim() ? { mood: change.mood } : {}),
+          ...(change.thread?.trim() ? { thread: change.thread } : {}),
+          ...(change.palette?.length ? { palette: change.palette } : {}),
           ...(ids.length ? { characterIds: ids } : {}),
         };
         next = {

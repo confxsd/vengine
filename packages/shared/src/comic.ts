@@ -176,6 +176,27 @@ export const ComicFrameSchema = z.object({
    * not a generic label. Optional: existing frames need no migration.
    */
   mood: z.string().optional(),
+  /**
+   * The narrative storyline this frame belongs to — a short label ("joker's tale",
+   * "the fortune teller memory"). Episodes often weave several storylines (a
+   * framing story + the tale told inside it, flashbacks, cutaways), and they can
+   * interleave — frames 1 & 4 one story, 2 & 3 another. The label groups frames
+   * for the author and the director-chat; the visual work is done by each thread's
+   * own moods/palettes (contrast BETWEEN storylines, consistency within one) and
+   * `continuesFrameId` links (which may point at a non-adjacent frame of the same
+   * thread). Absent = the episode's main storyline. Optional: no migration needed.
+   */
+  thread: z.string().optional(),
+  /**
+   * This frame's color accents (hex codes or color names) — the storyline-contrast
+   * lever: one thread gets its own palette so it reads visually distinct from the
+   * episode's other thread(s) while `style.theme` keeps the art style shared.
+   * Composed by `composeFramePrompt` INSTEAD of the project-wide `style.palette`
+   * when present: undefined inherits the project's, an explicit empty array drops
+   * the palette lock for this frame (same override shape as `mood` vs `storyMood`).
+   * Optional: existing frames need no migration.
+   */
+  palette: z.array(z.string()).optional(),
   /** The currently selected/displayed image (a hash from `variants`). The artist
    *  picks it; a run sets it to the freshest generation. */
   resultHash: z.string().length(64).optional(),
@@ -516,8 +537,11 @@ export function composeFramePrompt(project: ComicProject, frame: ComicFrame): st
 
   // Fold in the fixed palette (if any) as a trailing style directive, before the
   // reference directive, so it applies to every frame regardless of the template and
-  // old projects (no `{palette}` token needed). Empty palette → unchanged prompt.
-  const palette = paletteDirective(project.style.palette);
+  // old projects (no `{palette}` token needed). The frame's own palette overrides the
+  // project-wide one — the per-storyline contrast lever — with an explicit [] dropping
+  // the lock; absent inherits `style.palette` (same override shape as mood/storyMood).
+  // Empty palette → unchanged prompt.
+  const palette = paletteDirective(frame.palette ?? project.style.palette);
   const base = palette ? (withMood ? `${withMood}\n\n${palette}` : palette) : withMood;
 
   // Append exactly one "how to use the reference images" directive, so an edit-capable

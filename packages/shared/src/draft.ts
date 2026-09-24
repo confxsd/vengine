@@ -33,6 +33,35 @@ export const DraftFrameSchema = z.object({
   script: z.string().default(""),
   /** Names of characters visibly present in this frame (best-effort). */
   characters: z.array(z.string()).default([]),
+  /**
+   * The storyline this beat belongs to — a short stable label ("joker's tale",
+   * "the fortune teller memory"). Empty = the main storyline. A story that contains
+   * a story (a narrator + the tale they tell), a flashback or a cutaway weaves
+   * several storylines, and they can interleave (frames 1 & 4 one, 2 & 3 another);
+   * the label groups them so each can keep its own look (contrast between
+   * storylines, consistency within one). Default "" so a single-storyline parse
+   * (or a model that omits it) is always valid.
+   */
+  thread: z.string().default(""),
+  /**
+   * This beat's emotional tone, derived from its subtext — set when the beat
+   * breaks from the story's prevailing mood (which lands in `storyMood`), or to
+   * separate interleaved storylines tonally. Default "" (inherit the story mood).
+   */
+  mood: z.string().default(""),
+  /**
+   * Color accents (hex or names) for this beat — the visual-contrast lever for
+   * interleaved storylines (one palette per thread). Empty when the draft has a
+   * single storyline or no meaningful color split.
+   */
+  palette: z.array(z.string()).default([]),
+  /**
+   * 0-based index of an EARLIER parsed frame this beat literally continues (same
+   * scene, moments later) — including a NON-ADJACENT frame of an interleaved
+   * storyline (frame 4 continuing frame 1). Absent = the beat starts its own scene.
+   * Applied as the frame's `continuesFrameId` (scene-continuity reference).
+   */
+  continues: z.number().int().nonnegative().optional(),
 });
 export type DraftFrame = z.infer<typeof DraftFrameSchema>;
 
@@ -43,6 +72,8 @@ export const DraftParseSchema = z.object({
   title: z.string().default(""),
   /** The overall narrative arc as prose (drops straight into the project `story`). */
   story: z.string().default(""),
+  /** The story's prevailing emotional tone, derived from its theme (project `storyMood`). */
+  storyMood: z.string().default(""),
   /** The shared world/setting inferred across the draft (project `settings`). */
   settings: z.string().default(""),
   /** The beats, in reading order. */

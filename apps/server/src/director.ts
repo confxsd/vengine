@@ -39,8 +39,8 @@ You have TWO jobs every turn:
   "reply": string,   // your discussion (shown in the chat)
   "changes": [       // the edits to apply, in order; [] when the note is pure discussion
     { "op": "updateProject", "story"?, "storyMood"?, "settings"?, "styleTheme"?, "palette"?: string[] },
-    { "op": "updateFrame", "frameIndex": number, "prompt"?, "script"?, "camera"?, "mood"?, "characterNames"?: string[]|null, "continuesFrameIndex"?: number|null },
-    { "op": "addFrame", "afterIndex": number, "prompt": string, "script"?, "mood"?, "characterNames"?: string[] },
+    { "op": "updateFrame", "frameIndex": number, "prompt"?, "script"?, "camera"?, "mood"?, "thread"?: string|null, "palette"?: string[]|null, "characterNames"?: string[]|null, "continuesFrameIndex"?: number|null },
+    { "op": "addFrame", "afterIndex": number, "prompt": string, "script"?, "mood"?, "thread"?, "palette"?: string[], "characterNames"?: string[] },
     { "op": "deleteFrame", "frameIndex": number },
     { "op": "moveFrame", "from": number, "to": number },
     { "op": "upsertCharacter", "name": string, "aliases"?: string[], "description"?: string|null, "palette"?: string[] },
@@ -55,10 +55,12 @@ Semantics:
 - "characterNames": null means "whole cast appears"; an array means exactly those characters (any name or alias they're known by).
 - "upsertCharacter" updates the canon character when the name/alias exists, otherwise creates one; "description" is the character's defining features (build, face, wardrobe signature) reused across every story for consistency.
 - ERAS: the same character recurs at different life stages across episodes (teen Bruce, young Bruce, mature Bruce…). Each canon character may carry named eras with their own age-bearing look. Use "setCharacterEra" to pin which era THIS episode's cast is in (e.g. era "teen"); give "description" when defining/refining what changes at that stage (age, build, face, wardrobe of THAT era). Then write frame prompts consistent with that stage's look.
+- STORYLINES: an episode may weave several storylines — a framing story (someone telling a tale) and the story told inside it, a flashback, a dream, a cutaway — and they can interleave (e.g. frames 1 & 4 the Joker in the bar, frames 2 & 3 his tale). Frames carry a "thread" label naming their storyline (absent = the main storyline). Make storylines read VISUALLY DISTINCT from each other — give each thread its own "mood" and "palette" (its colors override the episode palette for that frame) and keep them consistent within the thread. Contrast BETWEEN storylines, consistency WITHIN one; NEVER change the art style or medium — contrast comes from palette, lighting and mood only. Link a beat to the earlier frame it literally continues via "continuesFrameIndex", INCLUDING non-adjacent frames of an interleaved storyline (frame 4 continuing frame 1).
 - "updateSeries" edits the universe itself (premise/lore) — use sparingly and only when the author asks.
 
 Editing discipline (what the author relies on you to fix):
 - "prompt" must be a vivid, self-contained VISUAL description of the single drawing: subjects, expression and posture derived from the subtext, action, setting, composition. NO on-image text, speech bubbles, captions, logos.
+- "prompt" and "characterNames" contain ONLY what the camera actually sees in the beat. People, places or things merely mentioned, planned, remembered or discussed in dialogue do NOT appear — a fortune teller the couple only TALKS about visiting is not in the drawing until a beat actually shows her. Strip such leakage when you find it, and never cast a character who isn't on screen.
 - Derive mood from the story's THEME and emotional arc, not generic labels: "what kind of cat am I" is anxious self-interrogation, an interrupted diary is intimacy punctured by the mundane. Set "storyMood" once for the episode's prevailing tone, and per-frame "mood" only where a beat breaks from it (e.g. a final panel turning "quietly liberated, contemplative").
 - Keep each character's defining features consistent with the canon descriptions in the context; if the canon description is thin, improve it via "upsertCharacter".
 - Do NOT invent an art style or medium into frame prompts — style lives in "styleTheme".
@@ -75,8 +77,15 @@ function frameSummary(project: ComicProject, i: number): string {
         .map((c) => c.name)
         .join(", ")
     : "(whole cast)";
+  const cont = f.continuesFrameId
+    ? project.frames.findIndex((x) => x.id === f.continuesFrameId)
+    : -1;
   return [
-    `  [${i}] camera: ${f.camera || "-"} · mood: ${f.mood || "-"} · cast: ${castNames}`,
+    `  [${i}] thread: ${f.thread || "(main)"} · camera: ${f.camera || "-"} · mood: ${
+      f.mood || "-"
+    } · cast: ${castNames}${f.palette?.length ? ` · palette: ${f.palette.join(", ")}` : ""}${
+      cont >= 0 ? ` · continues [${cont}]` : ""
+    }`,
     `      prompt: ${f.prompt.slice(0, 300)}`,
     f.script ? `      script: ${f.script.slice(0, 200)}` : null,
   ]

@@ -99,6 +99,32 @@ describe("composeFramePrompt", () => {
     expect(composeFramePrompt(blank, blank.frames[0]!)).not.toMatch(/Color palette:/);
   });
 
+  it("a frame palette overrides the project palette (storyline contrast)", () => {
+    const p = project({
+      style: { theme: "oil painting", model: "mock/gradient", seed: 1, palette: ["#556B2F", "warm sepia"] },
+      frames: [{ id: "a", prompt: "the bar", palette: ["sickly green", "#2a4d2a"] }],
+    });
+    const out = composeFramePrompt(p, p.frames[0]!);
+    expect(out).toContain("sickly green, #2a4d2a");
+    expect(out).not.toContain("#556B2F");
+  });
+
+  it("an absent frame palette inherits the project palette", () => {
+    const p = project({
+      style: { theme: "oil", model: "mock/gradient", seed: 1, palette: ["#123456"] },
+      frames: [{ id: "a", prompt: "the plaza" }],
+    });
+    expect(composeFramePrompt(p, p.frames[0]!)).toContain("#123456");
+  });
+
+  it("an explicit empty frame palette drops the project palette lock for that frame", () => {
+    const p = project({
+      style: { theme: "oil", model: "mock/gradient", seed: 1, palette: ["#123456"] },
+      frames: [{ id: "a", prompt: "the plaza", palette: [] }],
+    });
+    expect(composeFramePrompt(p, p.frames[0]!)).not.toMatch(/Color palette:/);
+  });
+
   it("places the palette before the reference directive on a referenced frame", () => {
     const p = project({
       style: {

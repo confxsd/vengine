@@ -98,7 +98,25 @@ export function DraftModal({ onClose, initialSeriesId }: Props) {
       prev ? { ...prev, frames: prev.frames.map((f, j) => (j === i ? { ...f, prompt } : f)) } : prev,
     );
   const removeFrame = (i: number) =>
-    setParse((prev) => (prev ? { ...prev, frames: prev.frames.filter((_, j) => j !== i) } : prev));
+    setParse((prev) =>
+      prev
+        ? {
+            ...prev,
+            frames: prev.frames
+              .filter((_, j) => j !== i)
+              // Continuity indices refer to the parse's own order: a link AT the
+              // removed beat is dropped, links past it shift down by one.
+              .map((f) => {
+                if (f.continues === undefined) return f;
+                if (f.continues === i) {
+                  const { continues: _dropped, ...rest } = f;
+                  return rest;
+                }
+                return f.continues > i ? { ...f, continues: f.continues - 1 } : f;
+              }),
+          }
+        : prev,
+    );
 
   const activeSeries = useMemo(
     () => seriesList.find((s) => s.id === seriesId),
@@ -347,6 +365,43 @@ export function DraftModal({ onClose, initialSeriesId }: Props) {
                       <p className="whitespace-pre-wrap border-l-2 border-border pl-2 text-[11px] italic leading-snug text-faint">
                         {f.script.trim()}
                       </p>
+                    )}
+                    {/* Storyline treatment the parser inferred: thread grouping,
+                        per-beat tone, palette accents, and scene-continuity links
+                        (incl. non-adjacent beats of an interleaved storyline). */}
+                    {(f.thread.trim() || f.mood.trim() || f.palette.length > 0 || f.continues !== undefined) && (
+                      <div className="flex flex-wrap items-center gap-1">
+                        {f.thread.trim() && (
+                          <span
+                            className="rounded-full bg-purple/15 px-1.5 py-0.5 text-[10px] text-purple"
+                            title="Storyline this beat belongs to — threads get their own look"
+                          >
+                            ⭆ {f.thread.trim()}
+                          </span>
+                        )}
+                        {f.mood.trim() && (
+                          <span className="rounded-full bg-elevated px-1.5 py-0.5 text-[10px] text-muted" title="This beat's tone">
+                            {f.mood.trim()}
+                          </span>
+                        )}
+                        {f.palette.length > 0 && (
+                          <span className="flex items-center gap-1 rounded-full bg-elevated px-1.5 py-0.5 text-[10px] text-muted" title="This storyline's palette accents">
+                            {f.palette.slice(0, 5).map((c, j) => {
+                              const hex = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(c.trim());
+                              return hex ? (
+                                <span key={j} className="h-2.5 w-2.5 rounded-full ring-1 ring-white/20" style={{ background: c.trim() }} />
+                              ) : (
+                                <span key={j}>{c.trim()}</span>
+                              );
+                            })}
+                          </span>
+                        )}
+                        {f.continues !== undefined && (
+                          <span className="rounded-full bg-elevated px-1.5 py-0.5 text-[10px] text-faint" title="Continues that beat's scene (its image feeds this frame as the continuity reference)">
+                            ↪ frame {f.continues + 1}
+                          </span>
+                        )}
+                      </div>
                     )}
                     {f.characters.length > 0 && (
                       <div className="flex flex-wrap gap-1">

@@ -227,7 +227,7 @@ function matchCast(cast: ComicCharacter[]): Map<string, string> {
  *  by both `applyDraft` (into the current project) and `importStory` (a new episode). */
 function draftToFrames(parse: DraftParse, cast: ComicCharacter[]): ComicFrame[] {
   const byName = matchCast(cast);
-  return parse.frames.map((f) => {
+  const frames: ComicFrame[] = parse.frames.map((f) => {
     const ids = [
       ...new Set(
         f.characters.map((n) => byName.get(n.trim().toLowerCase())).filter((id): id is string => !!id),
@@ -239,9 +239,22 @@ function draftToFrames(parse: DraftParse, cast: ComicCharacter[]): ComicFrame[] 
       variants: [],
       refHashes: [],
       ...(f.script.trim() ? { script: f.script } : {}),
+      ...(f.mood.trim() ? { mood: f.mood } : {}),
+      ...(f.thread.trim() ? { thread: f.thread } : {}),
+      ...(f.palette.length ? { palette: f.palette } : {}),
       ...(ids.length ? { characterIds: ids } : {}),
     };
   });
+  // Second pass: scene-continuity links by parsed index. A beat may continue a
+  // NON-ADJACENT frame of its storyline (frame 4 continuing frame 1), so links are
+  // resolved after all ids exist; a dangling index (beat removed in review) is dropped.
+  parse.frames.forEach((f, i) => {
+    const target = f.continues !== undefined ? frames[f.continues] : undefined;
+    if (target && target.id !== frames[i]!.id) {
+      frames[i] = { ...frames[i]!, continuesFrameId: target.id };
+    }
+  });
+  return frames;
 }
 
 export const useComic = create<ComicState>((set, get) => {
@@ -595,6 +608,7 @@ export const useComic = create<ComicState>((set, get) => {
           ...created,
           ...(series ? { seriesId: series.id } : {}),
           story: parse.story.trim() || created.story,
+          ...(parse.storyMood.trim() ? { storyMood: parse.storyMood.trim() } : {}),
           settings: parse.settings.trim() || created.settings,
           cast,
           library: [
@@ -659,10 +673,12 @@ export const useComic = create<ComicState>((set, get) => {
         const newFrames = draftToFrames(parse, p.cast);
         const story = opts.applyStory && parse.story.trim() ? parse.story : p.story;
         const settings = opts.applyStory && parse.settings.trim() ? parse.settings : p.settings;
+        const storyMood = opts.applyStory && parse.storyMood.trim() ? parse.storyMood : p.storyMood;
         return {
           ...p,
           story,
           settings,
+          storyMood,
           frames: opts.replaceFrames ? newFrames : [...p.frames, ...newFrames],
         };
       }),
