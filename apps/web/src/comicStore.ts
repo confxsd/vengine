@@ -247,10 +247,11 @@ function draftToFrames(parse: DraftParse, cast: ComicCharacter[]): ComicFrame[] 
   });
   // Second pass: scene-continuity links by parsed index. A beat may continue a
   // NON-ADJACENT frame of its storyline (frame 4 continuing frame 1), so links are
-  // resolved after all ids exist; a dangling index (beat removed in review) is dropped.
+  // resolved after all ids exist; the documented shape is strictly an EARLIER
+  // frame, so self/forward indices (observed from chatty models) are dropped.
   parse.frames.forEach((f, i) => {
-    const target = f.continues !== undefined ? frames[f.continues] : undefined;
-    if (target && target.id !== frames[i]!.id) {
+    const target = f.continues !== undefined && f.continues < i ? frames[f.continues] : undefined;
+    if (target) {
       frames[i] = { ...frames[i]!, continuesFrameId: target.id };
     }
   });
