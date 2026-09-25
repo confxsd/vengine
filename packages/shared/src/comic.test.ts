@@ -39,6 +39,8 @@ import {
   identityReferences,
   leadRef,
   styleReferences,
+  selectStyleAnchors,
+  STYLE_ANCHORS_PER_FRAME,
   MAX_REFS_PER_CHARACTER,
   MAX_VARIANTS,
   DEFAULT_NEGATIVE,
@@ -1268,5 +1270,69 @@ describe("prompt length ceiling (spec §14: directive stacking stays bounded)", 
     // headroom for wording upkeep but trips long before a model chokes.
     expect(out.length).toBeLessThan(2600);
     expect(out.length).toBeGreaterThan(1000); // and it isn't silently truncated
+  });
+});
+
+describe("per-frame style-anchor selection", () => {
+  const hh = (n: number) => n.toString(36).padStart(64, "x");
+  const taggedPack = [
+    { hash: hh(1), weight: 1 }, // untagged lead
+    { hash: hh(2), weight: 1, label: "Joker ECU", tags: ["closeup", "villain", "spotlight"] },
+    { hash: hh(3), weight: 1, tags: ["alley", "night"] },
+    { hash: hh(4), weight: 1, tags: ["rooftop", "storm", "action"] },
+    { hash: hh(5), weight: 1, tags: ["interior", "warm"] },
+  ];
+  const withPack = (overrides: Record<string, unknown> = {}) =>
+    project({ style: { ...project().style, anchors: taggedPack }, ...overrides });
+
+  it("picks anchors whose tags match the frame's camera and prompt (chosen keep pack order)", () => {
+    const p = withPack({
+      frames: [{ id: "a", prompt: "the joker grins in a rain-soaked alley", camera: "close-up" }],
+    });
+    const picked = selectStyleAnchors(p, p.frames[0]!);
+    // closeup (camera preset) → #2; alley+night (prompt) → #3; storm ("rain") → #4.
+    // All three fit the default set (in pack order); the untagged lead and the
+    // interior/warm anchor score 0 and stay out.
+    expect(picked.map((a) => a.hash)).toEqual([hh(2), hh(3), hh(4)]);
+  });
+
+  it("defaults to a focused set even on uncapped models", () => {
+    const anchors = Array.from({ length: 14 }, (_, i) => ({ hash: hh(i), weight: 1 }));
+    const p = project({ style: { ...project().style, anchors } });
+    expect(styleReferences(p.style)).toHaveLength(14); // the pack itself is untouched
+    expect(selectStyleAnchors(p, p.frames[0]!)).toHaveLength(STYLE_ANCHORS_PER_FRAME);
+    expect(frameReferences(p, p.frames[0]!)).toHaveLength(STYLE_ANCHORS_PER_FRAME);
+  });
+
+  it("frames with no tag signal fall back to the pack's lead anchors (legacy behavior)", () => {
+    const p = withPack({ settings: "", frames: [{ id: "a", prompt: "a quiet beat" }] });
+    const picked = selectStyleAnchors(p, p.frames[0]!);
+    expect(picked.map((a) => a.hash)).toEqual([hh(1), hh(2), hh(3)]);
+  });
+
+  it("anchors take only the slots the model's cap leaves after cast refs", () => {
+    const p = withPack({
+      cast: [
+        { id: "b", name: "Batman", refHashes: [hh(21), hh(22)] },
+        { id: "c", name: "Selina", refHashes: [hh(23), hh(24)] },
+      ],
+      frames: [{ id: "f1", prompt: "a tense rooftop confrontation in a storm", characterIds: ["b", "c"] }],
+    });
+    // 4 cast refs fill 4 of nano-banana-pro's 5 slots → exactly one style anchor,
+    // and it's the top-scoring one (rooftop+storm), not the pack's lead.
+    const refs = frameReferences(p, p.frames[0]!, { maxReferences: 5 });
+    expect(refs).toHaveLength(5);
+    expect(refs.slice(4).map((r) => r.hash)).toEqual([hh(4)]);
+  });
+
+  it("untagged packs keep the old append-then-truncate behavior under a budget", () => {
+    const legacy = Array.from({ length: 5 }, (_, i) => ({ hash: hh(30 + i), weight: 1 }));
+    const p = project({
+      style: { ...project().style, anchors: legacy },
+      cast: [{ id: "b", name: "Batman", refHashes: [hh(21), hh(22)] }],
+      frames: [{ id: "f1", prompt: "on the gotham waterfront", characterIds: ["b"] }],
+    });
+    const refs = frameReferences(p, p.frames[0]!, { maxReferences: 4 });
+    expect(refs.map((r) => r.hash)).toEqual([hh(21), hh(22), hh(30), hh(31)]);
   });
 });

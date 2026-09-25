@@ -407,6 +407,11 @@ export type ComicAsset = z.infer<typeof ComicAssetSchema>;
 export const ComicReferenceSchema = z.object({
   hash: z.string().length(64),
   weight: z.number().min(0).max(1).default(DEFAULT_REFERENCE_WEIGHT),
+  /** UI-only name for library tooltips (e.g. "Joker extreme close-up"). */
+  label: z.string().optional(),
+  /** Coarse categories this image teaches (e.g. "closeup", "alley", "warm") — the
+   *  per-frame anchor selector matches these against a frame's shot/role/prompt. */
+  tags: z.array(z.string()).optional(),
 });
 export type ComicReference = z.infer<typeof ComicReferenceSchema>;
 
@@ -827,6 +832,134 @@ export function styleReferences(style: ComicStyle): ComicReference[] {
     : [];
 }
 
+/* ─── Per-frame style-anchor selection ─────────────────────────────────────
+ *
+ * A pack can carry many anchors (the BTAS pack has 14: environments, close-ups,
+ * action two-shots, weather, warm/cold color scripts), but a frame should be
+ * steered by a *focused* few — the ones teaching what this frame needs — and on
+ * reference-capped models only a couple of style slots exist at all once cast
+ * refs take theirs. So the compiler picks per frame: score each anchor by how
+ * its `tags` overlap the frame's shot size / role / prompt vocabulary, keep the
+ * best few, and let the model's reference cap bound the budget. Untagged packs
+ * behave exactly as before (pack order, first-N).
+ */
+
+/** Most style anchors fed to any one frame. A focused set steers harder than the
+ *  whole pack — and every ref is an inline base64 image on the request. */
+export const STYLE_ANCHORS_PER_FRAME = 3;
+
+/** Model-side reference cap callers pass in (from the model manifest) so style
+ *  anchors fit the slots left after echo/continuity/cast refs. Omitted on
+ *  uncapped models — the default selection size applies. */
+export interface ReferenceBudget {
+  maxReferences?: number;
+}
+
+/** Frame role → the anchor categories that serve that beat's job. */
+const ROLE_ANCHOR_TAGS: Record<FrameRole, string[]> = {
+  establish: ["establish", "wide"],
+  develop: [],
+  escalate: ["action"],
+  turn: ["action", "lowangle"],
+  settle: ["establish"],
+  payoff: ["action", "silhouette"],
+};
+
+/** Shot-size class → the anchor categories that serve that framing. */
+const SHOT_ANCHOR_TAGS: Record<ShotSize, string[]> = {
+  xws: ["wide", "establish"],
+  wide: ["wide", "establish"],
+  full: ["wide"],
+  medium: ["medium"],
+  close: ["closeup"],
+  xcu: ["closeup"],
+};
+
+/** Prompt vocabulary → anchor tags. Deliberately shallow: each hit is one
+ *  point, and anchors win by overlap, not by any single keyword. No `night`
+ *  or `gotham`/`city` hint on purpose — in a noir universe those describe
+ *  every frame (settings alone would match), so they carry no signal; the
+ *  anchors keep those tags for packs where they DO differentiate. */
+const ANCHOR_TAG_HINTS: Record<string, RegExp> = {
+  closeup: /close-?up|\bfaces?\b|\bportrait\b|\beyes\b/i,
+  medium: /medium shot|waist up|half body/i,
+  wide: /wide shot|wide angle|\bskyline\b|\bcityscape\b|aerial/i,
+  lowangle: /low[- ]angle|from below|worm'?s[- ]eye/i,
+  establish: /\bestablish|\bvista\b|sprawls|\bhorizon\b/i,
+  interior:
+    /interior|inside|\broom\b|\boffice\b|manor|penthouse|\bstudy\b|gallery|laborator|\blab\b|boardroom|warehouse|apartment|\bcave\b|ballroom/i,
+  city: /\bskyline\b|\bgcpd\b|downtown/i,
+  alley: /\balley\b/i,
+  street: /\bstreet\b|sidewalk/i,
+  rooftop: /rooftop|\broof\b|gargoyle/i,
+  warm: /sunset|\bdusk\b|\bdawn\b|amber|\bwarm\b|golden/i,
+  cold: /\bcold\b|\bice\b|\bsnow\b|frost|freez/i,
+  storm: /\brain\b|\bstorm\b|lightning|thunder/i,
+  action:
+    /\bfight|\bgrabs?\b|punch|\bleaps?\b|\bswings?\b|chase|sprint|\bdives?\b|struggl|lunges|throws|brawl/i,
+  twoshot: /confront|face off|faces off|faced off|across from|opposite|two-?shot/i,
+  silhouette: /silhouette|backlit|rim[- ]lit/i,
+  spotlight: /spotlight|key[- ]lit|\bstage\b|vaudeville/i,
+  villain: /\bvillain|\bthug|\bgangster|crime boss|henchman/i,
+};
+
+/** The anchor tags this frame "asks for": its shot size and structural role map
+ *  directly, and the shared text (prompt, settings, moods, plan direction)
+ *  contributes keyword hits. */
+function frameAnchorTags(project: ComicProject, frame: ComicFrame): Set<string> {
+  const tags = new Set<string>();
+  const shot = cameraSizeOf(frame);
+  if (shot) for (const t of SHOT_ANCHOR_TAGS[shot]) tags.add(t);
+  if (frame.role) for (const t of ROLE_ANCHOR_TAGS[frame.role]) tags.add(t);
+  const camera = frame.camera?.toLowerCase() ?? "";
+  if (/low[- ]angle|from below|worm'?s[- ]eye/.test(camera)) tags.add("lowangle");
+  const text = [
+    frame.prompt,
+    project.settings,
+    frame.mood,
+    project.storyMood,
+    project.plan?.archetype,
+    project.plan?.motif,
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+  for (const [tag, hint] of Object.entries(ANCHOR_TAG_HINTS)) {
+    if (hint.test(text)) tags.add(tag);
+  }
+  return tags;
+}
+
+/**
+ * The style anchors that should steer THIS frame: relevance-ranked (tag overlap
+ * with the frame's shot/role/prompt), capped at `slots` — or, when a model
+ * budget bounds it, at the slots left after the frame's echo/continuity/own/cast
+ * references. Chosen anchors keep pack order (earlier pack position steers
+ * harder); untagged anchors score 0 and fall back to pack order, so a pack
+ * without tags behaves exactly like the old append-everything-then-truncate.
+ */
+export function selectStyleAnchors(
+  project: ComicProject,
+  frame: ComicFrame,
+  slots?: number,
+): ComicReference[] {
+  const anchors = styleReferences(project.style);
+  if (!anchors.length) return [];
+  const max = Math.max(0, slots ?? STYLE_ANCHORS_PER_FRAME);
+  if (max === 0) return [];
+  const wanted = frameAnchorTags(project, frame);
+  const scored = anchors.map((ref, i) => ({
+    ref,
+    i,
+    score: (ref.tags ?? []).reduce((sum, t) => sum + (wanted.has(t) ? 1 : 0), 0),
+  }));
+  scored.sort((a, b) => b.score - a.score || a.i - b.i);
+  return scored
+    .slice(0, max)
+    .sort((a, b) => a.i - b.i)
+    .map((s) => s.ref);
+}
+
 /**
  * The current image of the frame this one continues, as a single full-weight
  * reference (empty when there's no link, it's a self-link, the target was removed,
@@ -917,24 +1050,21 @@ export function editReferences(
   frame: ComicFrame,
   baseHash: string,
   keepStyle: boolean,
+  budget?: ReferenceBudget,
 ): ComicReference[] {
   const base: ComicReference = { hash: baseHash, weight: DEFAULT_REFERENCE_WEIGHT };
   if (!keepStyle) return [base];
-  const ids = frame.characterIds;
-  const activeCast =
-    ids === undefined ? project.cast : project.cast.filter((c) => ids.includes(c.id));
-  const characterRefs = activeCast.flatMap((c) =>
-    // Cap per character so one big sheet doesn't monopolise the reference budget.
-    c.refHashes
-      .slice(0, MAX_REFS_PER_CHARACTER)
-      .map((hash) => ({ hash, weight: DEFAULT_REFERENCE_WEIGHT })),
-  );
+  const fixed =
+    1 + frameOwnReferences(frame).length + castReferences(project, frame).length;
+  const anchorSlots = budget?.maxReferences
+    ? Math.min(STYLE_ANCHORS_PER_FRAME, budget.maxReferences - fixed)
+    : undefined;
   const byHash = new Map<string, ComicReference>();
   for (const ref of [
     base,
     ...frameOwnReferences(frame),
-    ...characterRefs,
-    ...styleReferences(project.style),
+    ...castReferences(project, frame),
+    ...selectStyleAnchors(project, frame, anchorSlots),
   ]) {
     if (!byHash.has(ref.hash)) byHash.set(ref.hash, ref);
   }
@@ -953,6 +1083,9 @@ export interface EditFrameRequest {
   seed?: number;
   /** Carry the project's style refs + active cast as secondary references (default true). */
   keepStyle?: boolean;
+  /** The edit model's reference cap (model manifest) — bounds the style-anchor
+   *  budget so the compiled set fits the endpoint. */
+  maxReferences?: number;
 }
 
 /**
@@ -970,7 +1103,13 @@ export function compileEditFrame(
   const { style } = project;
   const mode = req.mode ?? DEFAULT_EDIT_MODE;
   const keepStyle = req.keepStyle ?? true;
-  const references = editReferences(project, frame, req.baseHash, keepStyle);
+  const references = editReferences(
+    project,
+    frame,
+    req.baseHash,
+    keepStyle,
+    req.maxReferences ? { maxReferences: req.maxReferences } : undefined,
+  );
   // Style LoRAs + the active cast's character LoRAs (same compose as a normal frame).
   const loras = frameLoras(project, frame).map((l) => ({ path: l.path, scale: l.scale }));
 
@@ -1012,33 +1151,43 @@ export function frameOwnReferences(frame: ComicFrame): ComicReference[] {
  * than continuing a prior scene: this frame's own attached refs first (per-frame
  * guidance), then the identity refs of each active cast member (character consistency,
  * full weight, capped at `MAX_REFS_PER_CHARACTER` so one big sheet can't dominate the
- * budget), then the project's style references (look consistency). Ordered
- * (earlier = stronger) and deduped by hash (first wins). Character refs deliberately
- * lead style: when a model caps the number of input images and the adapter truncates
- * the tail (see `maxReferences` in the fal adapter), the look — also carried by the
- * continuity frame and style LoRAs — is dropped before a character's likeness. This is
- * the set governed by `referenceMode`/`referenceDirective`; `frameReferences` prepends
- * scene continuity.
+ * budget), then a relevance-selected subset of the project's style references (see
+ * `selectStyleAnchors`; `anchorSlots` bounds it when the caller knows the model's
+ * reference cap). Ordered (earlier = stronger) and deduped by hash (first wins).
+ * Character refs deliberately lead style: when a model caps the number of input
+ * images and the adapter truncates the tail (see `maxReferences` in the fal adapter),
+ * the look — also carried by the continuity frame and style LoRAs — is dropped before
+ * a character's likeness. This is the set governed by `referenceMode`/
+ * `referenceDirective`; `frameReferences` prepends scene continuity.
  */
-export function identityReferences(project: ComicProject, frame: ComicFrame): ComicReference[] {
-  const ids = frame.characterIds;
-  const activeCast =
-    ids === undefined ? project.cast : project.cast.filter((c) => ids.includes(c.id));
-  const characterRefs = activeCast.flatMap((c) =>
-    // Cap per character so one big sheet doesn't monopolise the reference budget.
-    c.refHashes
-      .slice(0, MAX_REFS_PER_CHARACTER)
-      .map((hash) => ({ hash, weight: DEFAULT_REFERENCE_WEIGHT })),
-  );
+export function identityReferences(
+  project: ComicProject,
+  frame: ComicFrame,
+  anchorSlots?: number,
+): ComicReference[] {
   const byHash = new Map<string, ComicReference>();
   for (const ref of [
     ...frameOwnReferences(frame),
-    ...characterRefs,
-    ...styleReferences(project.style),
+    ...castReferences(project, frame),
+    ...selectStyleAnchors(project, frame, anchorSlots),
   ]) {
     if (!byHash.has(ref.hash)) byHash.set(ref.hash, ref);
   }
   return [...byHash.values()];
+}
+
+/** The active cast's identity refs (tri-state membership via `characterIds`),
+ *  each character capped at `MAX_REFS_PER_CHARACTER` so one big sheet can't
+ *  monopolise the reference budget. */
+function castReferences(project: ComicProject, frame: ComicFrame): ComicReference[] {
+  const ids = frame.characterIds;
+  const activeCast =
+    ids === undefined ? project.cast : project.cast.filter((c) => ids.includes(c.id));
+  return activeCast.flatMap((c) =>
+    c.refHashes
+      .slice(0, MAX_REFS_PER_CHARACTER)
+      .map((hash) => ({ hash, weight: DEFAULT_REFERENCE_WEIGHT })),
+  );
 }
 
 /**
@@ -1046,21 +1195,32 @@ export function identityReferences(project: ComicProject, frame: ComicFrame): Co
  * first (a resolved bookend governs composition, so the mirrored opening leads
  * at full weight — it would otherwise fight the continuity frame for the lead),
  * then the scene-continuity reference, then the frame's identity/style
- * references (own refs → active cast → style). Order matters — models weight
- * earlier references more, and adapters that cap input images truncate the
- * tail — so echo leads, continuity follows, then the frame's own refs, then
- * characters, then style (the most expendable, also carried by LoRAs). Deduped
- * by hash (first wins, so an image used in two roles keeps its
- * strongest/earliest weight and is sent once). Shared by the compiler and the
- * UI preview so what runs is exactly what the artist sees.
+ * references (own refs → active cast → relevance-selected style anchors). Order
+ * matters — models weight earlier references more, and adapters that cap input
+ * images truncate the tail — so echo leads, continuity follows, then the
+ * frame's own refs, then characters, then style (the most expendable, also
+ * carried by LoRAs). When `budget.maxReferences` is given (the generation
+ * model's cap, from the manifest), the style-anchor set is sized to the slots
+ * that remain after the scene-critical refs, so the adapter never has to drop
+ * a silently-truncated tail. Deduped by hash (first wins, so an image used in
+ * two roles keeps its strongest/earliest weight and is sent once). Shared by
+ * the compiler and the UI preview so what runs is exactly what the artist sees.
  */
-export function frameReferences(project: ComicProject, frame: ComicFrame): ComicReference[] {
+export function frameReferences(
+  project: ComicProject,
+  frame: ComicFrame,
+  budget?: ReferenceBudget,
+): ComicReference[] {
+  const leading = [...echoReferences(project, frame), ...continuityReferences(project, frame)];
+  const fixed =
+    leading.length +
+    frameOwnReferences(frame).length +
+    castReferences(project, frame).length;
+  const anchorSlots = budget?.maxReferences
+    ? Math.min(STYLE_ANCHORS_PER_FRAME, budget.maxReferences - fixed)
+    : undefined;
   const byHash = new Map<string, ComicReference>();
-  for (const ref of [
-    ...echoReferences(project, frame),
-    ...continuityReferences(project, frame),
-    ...identityReferences(project, frame),
-  ]) {
+  for (const ref of [...leading, ...identityReferences(project, frame, anchorSlots)]) {
     if (!byHash.has(ref.hash)) byHash.set(ref.hash, ref);
   }
   return [...byHash.values()];
@@ -1209,6 +1369,9 @@ export interface CompileComicOptions {
   exportDir?: string;
   /** Image format for exported frames. */
   format?: "png" | "jpeg" | "webp";
+  /** The generation model's reference cap (model manifest) — bounds the per-frame
+   *  style-anchor budget so compiled references fit the endpoint. */
+  maxReferences?: number;
 }
 
 /**
@@ -1231,7 +1394,11 @@ export function compileComic(
     const gid = genNodeId(frame.id);
     const eid = exportNodeId(frame.id);
     const x = i * 360;
-    const references = frameReferences(project, frame);
+    const references = frameReferences(
+      project,
+      frame,
+      opts.maxReferences ? { maxReferences: opts.maxReferences } : undefined,
+    );
     // Per-frame: style LoRAs + the active cast members' character LoRAs.
     const loras = frameLoras(project, frame).map((l) => ({ path: l.path, scale: l.scale }));
 
