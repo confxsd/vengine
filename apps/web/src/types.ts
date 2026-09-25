@@ -163,6 +163,14 @@ export interface FrameOutputDelta {
   variants: ComicVariant[];
 }
 
+/** An identity sheet the run's wave-0 bootstrap generated for a ref-less cast
+ *  member (already persisted server-side; the client mirrors it into its project). */
+export interface CastSheetDelta {
+  characterId: string;
+  name: string;
+  hash: string;
+}
+
 /** Response of POST /api/comics/:id/run. */
 export interface ComicRunResult {
   runId: string;
@@ -172,6 +180,8 @@ export interface ComicRunResult {
   generated: number;
   /** Frames returned unchanged from cache (identical inputs → same image). */
   cached: number;
+  /** Identity sheets generated before the frames (empty when the active cast all had references). */
+  sheets: CastSheetDelta[];
   frames: FrameOutputDelta[];
 }
 

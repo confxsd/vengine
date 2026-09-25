@@ -781,3 +781,50 @@ clears echo links to the removed frame, like continuity links.
   both-dependency and self-link `partitionWaves` cases, the client apply path (`draftToFrames` —
   now exported and tested in the web package), the DraftModal-shaped `rhythmWarnings` stand-ins,
   the §14 prompt-length ceiling (~2.2k chars fully loaded, ceiling 2600), and both-links deletion.
+
+## 21. Consistency pass — cast identity bootstrap + thread-core anchors (implemented)
+
+The remaining cross-frame drift after §16/§20 had three root causes, each fixed structurally
+(golden-tested), not by prompt tweaks:
+
+**Cast members without identity references (the big one).** The whole identity mechanism — cast
+`refHashes` fed as references + "take each character's identity from their own sheet" directives —
+silently no-ops for a cast member with **no refs** (a freshly added cast entry, or a library
+character that only ever had a text description). The model then re-invents that character from
+prose on every frame (Selina's wardrobe/hair changing panel to panel). The runner now closes the
+gap itself: before the frame waves, a **wave 0** generates one **character reference sheet** per
+ref-less cast member active in the run (`castNeedingSheets`), with the sheet prompt mined from the
+episode's own sentences naming the character (`characterSheetPrompt` — the recurring text IS the
+design the frames agree on). The result is persisted into the project cast (`leadRef`), banked into
+the project's reference pool, and — when the entry has a `libraryId` — appended to the **library
+character** (`appendCharacterRefs`), so the whole universe learns the identity once. Sheets compile
+via `compileCastSheets` (one `sheet-<charId>` node per character, style anchors + style LoRAs only
+— never another character's likeness, never character LoRAs — locked style seed, so a re-bootstrap
+of the same text reproduces). Best-effort by design: a failed sheet never blocks the episode;
+only a client cancellation aborts. The run response carries `sheets[]`, the dry-run plan merges the
+sheet graph's cost (confirm-before-spend stays honest), and the web store adopts both + toasts.
+Second run generates nothing (cast now has refs); on reference-consuming models the frames
+regenerate exactly once with the sheets attached, then settle into cache hits.
+
+**Anonymous reference images.** Feeding five sheets to an edit endpoint without saying WHO each
+image is leaves the model guessing the face→character mapping from pixels alone — likeness bleeds
+between characters. `composeFramePrompt` now appends a **reference roster**
+(`referenceRoster`) naming every fed image in `frameReferences` order, 1-based: continuity/echo
+lead, the frame's own refs, each cast member's sheets (`images 3-4: Bruce Wayne (identity sheets)`),
+and an open-ended trailing clause for the style anchors ("not characters" — which also stops the
+model from copying a *person* out of a style still, an anchor-only frame's only mapping). Roster
+lines are drop-empty, so reference-less frames compose byte-identically to v2 goldens.
+
+**Per-frame anchor sets that flip within a scene.** Purely per-frame relevance let two frames of the
+SAME room draw contradictory anchors (the candlelit parlor pulling the cold rooftop-lightning still
+via its "low-angle rim-lit" words), and "parlor" wasn't even in the `interior` hint vocabulary. Two
+changes: `ANCHOR_TAG_HINTS.interior` gained the common indoor rooms (parlor, shop, café, tavern,
+tent, temple, kitchen, corridor, basement, attic, lobby, cabin, castle, throne, hotel, diner); and
+`selectStyleAnchors` is now **core-first** — `STYLE_CORE_PER_THREAD` (2) anchor slots are elected by
+the frame's **thread** (`threadAnchorTags`: the union tag vocabulary over every same-thread frame,
+"" = the whole episode), then the remaining slots fill by the frame's own shot/role/prompt overlap.
+Same-thread frames therefore feed the SAME leading anchors (a stable look core; verified by
+simulation: the Fortune-Teller strip's four frames went from three different anchor trios to one),
+interleaved storylines elect different cores (contrast BETWEEN, consistency WITHIN), one-slot
+budgets still hold the shared core, and untagged packs score 0 on both axes and collapse to the
+legacy pack-order behavior.

@@ -18,6 +18,12 @@ Generation is the composition of three orthogonal things. The studio's pages map
 | Axis            | Owns                                              | Page          |
 | --------------- | ------------------------------------------------- | ------------- |
 | **Identity**    | recurring cast → `refHashes` / character LoRA     | Library       |
+
+Identity refs are no longer hand-made only: since 2026-09-25 the comic runner **bootstraps a
+generated character sheet** for any cast member active in a run with zero `refHashes` (see
+ENGINEERING §21 / EPISODE_STUDIO §7 wave 0) — mined from the episode's own descriptions of the
+character, persisted into the project cast *and* the backing Library character, so the reference
+gallery fills itself the first time a character appears.
 | **Style**       | medium / palette / negative → Style Pack / LoRA   | Library       |
 | **Composition** | the concrete scene: subject, action, camera       | Studio, Scenes |
 

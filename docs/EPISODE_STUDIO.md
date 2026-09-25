@@ -218,6 +218,7 @@ Same function, same single source of truth (UI preview, compiler, run). New bloc
 6. **Palette** — unchanged (thread > project override semantics).
 7. **Transition directive** *(new)* — frames *i ≥ 1* with a `gutter` emit `Transition: …` (§5.3). Sits before the reference directives so the gutter's intent frames how the references are used.
 8. **Exactly one composition-governing directive** — unchanged precedence, one addition: a resolved **echo** takes over composition (echo directive + the echo image leads `frameReferences`); then continuity as today; then plain reference directive.
+9. **Reference roster** *(new, 2026-09-25)* — when any references are fed, a trailing `referenceRoster(project, frame)` paragraph names every fed image in `frameReferences` order, 1-based: continuity/echo lead, the frame's own refs, then each active cast member's sheets (`images 3-4: Bruce Wayne (identity sheets)`), closing with an open-ended "; the remaining images are style/look anchors, not characters." Anonymous sheets leave a multi-reference model guessing the face→character mapping (likeness bleeds); the mapping also stops the model copying a *person* out of a style still. Drop-empty: reference-less frames compose byte-identically to the v2 goldens.
 
 ### 5.1 Role flavors (data, not code paths)
 
@@ -265,6 +266,10 @@ sheet, never from how they appear in the mirrored image.
 
 `frameReferences` order becomes: continuity ref → **echo ref** (when set & resolved; echo leads if both, per §3.5) → frame's own refs → cast identity refs → style refs. Dedup/caps exactly as today.
 
+### 5.4 Style-anchor selection — thread-core election *(2026-09-25)*
+
+`selectStyleAnchors` is **core-first** so a scene's look cannot flip panel to panel: `STYLE_CORE_PER_THREAD` (2) of a frame's anchor slots are elected by its **thread** — `threadAnchorTags(project, frame)`, the union tag vocabulary over every same-thread frame ("" = the whole episode) — and the remaining slots fill by the frame's own shot/role/prompt overlap (then thread overlap, then pack order). Same-thread frames feed the SAME leading anchors; interleaved storylines elect different cores (contrast BETWEEN, consistency WITHIN); a one-slot budget still holds the shared core. The `interior` hint vocabulary covers common indoor rooms (parlor, shop, café, tavern, tent, temple, …) so interior beats stop pulling rooftop/street anchors. Untagged anchors score 0 on both axes and collapse to the legacy pack-order behavior. Verified on the Fortune-Teller strip: four frames went from three different anchor trios (the parlor steered by cold outdoor lightning stills) to one shared set.
+
 ## 6. Draft parse v2
 
 `apps/server/src/draft.ts` system prompt gains, in spirit:
@@ -284,6 +289,8 @@ Apply-side (`draftToFrames` in `apps/web/src/comicStore.ts`, mirrored in `apps/s
 Problem: `generate.text-to-image` takes no input ports (references are compile-time param hashes), and frames are DAG siblings — so "generate all" on a fresh episode compiles continuations before their sources exist.
 
 Fix at the orchestration layer (no engine changes): the server `/api/comics/:id/run` handler runs **waves**.
+
+**Wave 0 — cast identity bootstrap** *(2026-09-25)*: before the frame waves, the run handler generates one **character reference sheet** for every ref-less cast member active in the selection (`castNeedingSheets`), compiled by `compileCastSheets` (one `sheet-<charId>` node per character; style anchors + style LoRAs only — never another character's likeness; locked style seed). The sheet prompt is mined from the episode itself (`characterSheetPrompt`): every frame-prompt sentence naming the character (name or alias) IS the recurring design the frames agree on. Results persist into the project cast (`leadRef`), the project's reference pool, and the backing **library character** (`appendCharacterRefs`) so the whole universe learns the identity once. Best-effort: a failed sheet never blocks the episode; only a client cancellation aborts. The run response carries `sheets[]`; the dry-run plan merges the sheet graph's cost; a re-run generates nothing (the cast now has refs).
 
 ```
 function runWaves(project, frameIds?):

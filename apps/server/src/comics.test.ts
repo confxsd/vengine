@@ -6,11 +6,12 @@ import { Hono } from "hono";
 import { Executor } from "@vengine/core";
 import { mockModel, ProviderRegistry } from "@vengine/providers";
 import { createNodeRegistry } from "@vengine/nodes";
-import { AssetStore, FileOutputCache, ProjectStore } from "@vengine/storage";
+import { AssetStore, FileOutputCache, LibraryStore, ProjectStore } from "@vengine/storage";
 import {
   ComicFrameSchema,
   ComicProjectSchema,
   genNodeId,
+  sheetNodeId,
   type ComicProject,
   type NodeProgressEvent,
 } from "@vengine/shared";
@@ -177,9 +178,11 @@ function harness(runHost?: RunHost) {
   const root = mkdtempSync(join(tmpdir(), "vengine-comics-"));
   const projects = new ProjectStore({ root: join(root, "projects") });
   const assets = new AssetStore({ root: join(root, "assets") });
+  const library = new LibraryStore({ root: join(root, "library") });
   const rt = {
     projects,
     assets,
+    library,
     providers: new ProviderRegistry().register(mockModel),
     executor: new Executor({
       registry: createNodeRegistry({ providers: new ProviderRegistry().register(mockModel) }),
@@ -218,6 +221,7 @@ interface RunResponse {
   error?: string;
   generated: number;
   cached: number;
+  sheets?: { characterId: string; name: string; hash: string }[];
   frames: { id: string; resultHash?: string }[];
 }
 
@@ -336,4 +340,97 @@ describe("POST /api/comics/:id/run — the wave loop end-to-end (offline mock mo
     expect(run2.status).toBe("done");
     expect(run2.frames.every((f) => f.resultHash)).toBe(true);
   });
+});
+
+// ---------------------------------------------------------------------------
+// Wave 0 — cast identity bootstrap. Ref-less cast get a generated reference
+// sheet BEFORE the frames run, so the "take identity from their own sheet"
+// directives always have a sheet and characters stop re-inventing per panel.
+// ---------------------------------------------------------------------------
+describe("POST /api/comics/:id/run — cast identity bootstrap (offline mock model)", () => {
+  const castEpisode = () =>
+    project({
+      cast: [
+        { id: "s", name: "Selina Kyle", aliases: [], refHashes: [] },
+        { id: "b", name: "Bruce", aliases: [], refHashes: ["b".repeat(64)] },
+      ],
+      frames: [
+        { id: "a", prompt: "one", characterIds: ["s"] },
+        { id: "z", prompt: "two" },
+      ],
+    });
+
+  it("generates a sheet for the ref-less cast first, persists it, and syncs the library", async () => {
+    const { app, rt, events } = harness();
+    const id = await seedEpisode(app, castEpisode().frames.map((f) => ComicFrameSchema.parse(f)));
+    // The cast rides on the project: patch it in like a draft apply would.
+    await rt.projects.update(id, (cur) => ({
+      ...cur,
+      cast: castEpisode().cast,
+      library: [{ hash: "b".repeat(64), label: "Bruce still" }],
+    }));
+    // The library character backs the cast entry, so the sheet must reach it too.
+    await rt.library.upsertCharacter({
+      id: "lib-s",
+      name: "Selina Kyle",
+      aliases: [],
+      refHashes: [],
+    } as never);
+    await rt.projects.update(id, (cur) => ({
+      ...cur,
+      cast: cur.cast.map((c) => (c.id === "s" ? { ...c, libraryId: "lib-s" } : c)),
+    }));
+
+    const res = await app.request(`/api/comics/${id}/run`, post());
+    expect(res.status).toBe(200);
+    const run1 = (await res.json()) as RunResponse;
+    expect(run1.status).toBe("done");
+    // Exactly the ref-less active cast got a sheet — Bruce (has refs) never does.
+    expect(run1.sheets).toHaveLength(1);
+    expect(run1.sheets![0]).toMatchObject({ characterId: "s", name: "Selina Kyle" });
+    const sheetHash = run1.sheets![0]!.hash;
+    expect(sheetHash).toMatch(/^[0-9a-f]{64}$/);
+
+    // The sheet node ran BEFORE any frame node (it feeds them).
+    const order = events.map((e) => e.nodeId);
+    const sheetAt = order.lastIndexOf(sheetNodeId("s"));
+    expect(sheetAt).toBeGreaterThanOrEqual(0);
+    expect(Math.min(...order.map((_, i) => i).filter((i) => order[i] === genNodeId("a")))).toBeGreaterThan(sheetAt);
+
+    // Persisted: the cast entry leads with the sheet, the pool banks it, and the
+    // backing library character learned the identity.
+    const saved = await rt.projects.get(id);
+    const selina = saved.cast.find((c) => c.id === "s")!;
+    expect(selina.refHashes).toEqual([sheetHash]);
+    expect(saved.library.some((a) => a.hash === sheetHash)).toBe(true);
+    const libChar = (await rt.library.get()).characters.find((c) => c.id === "lib-s")!;
+    expect(libChar.refHashes).toContain(sheetHash);
+
+    // Re-run: Selina has refs now, so there is NO sheet wave. The frames are all
+    // cache hits here because the mock model doesn't consume references — the
+    // node drops them from the cache key, so attaching the sheet is free. On a
+    // reference-consuming model (nano-banana/FLUX.2) this run regenerates once
+    // with the sheet attached, then settles into cache hits exactly the same way.
+    const res2 = await app.request(`/api/comics/${id}/run`, post());
+    const run2 = (await res2.json()) as RunResponse;
+    expect(run2.sheets).toEqual([]);
+    expect(run2.generated).toBe(0);
+    expect(run2.cached).toBe(2);
+  }, 30_000);
+
+  it("a cast member with refs everywhere never triggers the sheet wave", async () => {
+    const { app, rt } = harness();
+    const id = await seedEpisode(
+      app,
+      [{ id: "a", prompt: "one", characterIds: ["b"] }].map((f) => ComicFrameSchema.parse(f)),
+    );
+    await rt.projects.update(id, (cur) => ({
+      ...cur,
+      cast: castEpisode().cast,
+    }));
+    const res = await app.request(`/api/comics/${id}/run`, post());
+    const run = (await res.json()) as RunResponse;
+    expect(run.status).toBe("done");
+    expect(run.sheets).toEqual([]);
+  }, 30_000);
 });

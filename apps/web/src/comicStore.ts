@@ -380,14 +380,35 @@ export const useComic = create<ComicState>((set, get) => {
       const byId = new Map(result.frames.map((f) => [f.id, f]));
       const project = get().project;
       if (project) {
+        // Identity sheets the server bootstrapped before the frames: mirror them
+        // into the in-memory cast (leading ref) + the reusable pool, exactly as
+        // the server persisted them, so the UI shows the new refs without a reload.
+        const sheetHash = new Map((result.sheets ?? []).map((s) => [s.characterId, s.hash]));
         set({
           project: {
             ...project,
+            library: [
+              ...project.library,
+              ...(result.sheets ?? [])
+                .filter((s) => !project.library.some((a) => a.hash === s.hash))
+                .map((s) => ({ hash: s.hash, label: s.name })),
+            ],
+            cast: project.cast.map((c) =>
+              sheetHash.has(c.id)
+                ? { ...c, refHashes: leadRef(c.refHashes, sheetHash.get(c.id)!) }
+                : c,
+            ),
             frames: project.frames.map((f) => {
               const r = byId.get(f.id);
               return r ? { ...f, resultHash: r.resultHash, variants: r.variants } : f;
             }),
           },
+        });
+      }
+      if ((result.sheets ?? []).length > 0 && result.status === "done") {
+        const names = (result.sheets ?? []).map((s) => s.name || "cast member").join(", ");
+        toast.success("Reference sheets generated", {
+          description: `${names} had no identity references — one was generated for each and attached to every frame they appear in.`,
         });
       }
       if (result.status === "done") {

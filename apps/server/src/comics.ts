@@ -4,10 +4,14 @@ import { z } from "zod";
 import {
   ComicProjectSchema,
   compileComic,
+  compileCastSheets,
   compileEditFrame,
+  castNeedingSheets,
+  sheetNodeId,
   frameImageHash,
   genNodeId,
   exportNodeId,
+  leadRef,
   unionVariants,
   type ComicFrame,
   type ComicProject,
@@ -196,7 +200,23 @@ export function registerComicRoutes(
       maxReferences: modelRefCap(rt, project.style.model),
     });
     const targets = parsed.data.frameIds?.map(exportNodeId);
-    const plan = await rt.executor.plan(graph, { quality: parsed.data.quality, targets });
+    let plan = await rt.executor.plan(graph, { quality: parsed.data.quality, targets });
+    // The run generates identity sheets for ref-less cast BEFORE the frames (the
+    // wave-0 bootstrap) — their cost belongs in the same confirm-before-spend
+    // view, so the dry-run merges the sheet graph's plan in.
+    const needSheets = castNeedingSheets(project, parsed.data.frameIds ?? project.frames.map((f) => f.id));
+    if (needSheets.length) {
+      const sheetGraph = compileCastSheets(project, needSheets, {
+        maxReferences: modelRefCap(rt, project.style.model),
+      });
+      const sheetPlan = await rt.executor.plan(sheetGraph, { quality: parsed.data.quality });
+      plan = {
+        nodes: [...sheetPlan.nodes, ...plan.nodes],
+        willRunCount: sheetPlan.willRunCount + plan.willRunCount,
+        cachedCount: sheetPlan.cachedCount + plan.cachedCount,
+        estTotalCost: sheetPlan.estTotalCost + plan.estTotalCost,
+      };
+    }
     return c.json(plan);
   });
 
@@ -232,7 +252,78 @@ export function registerComicRoutes(
     let status = "done";
     let error: string | undefined;
 
+    // ─── Wave 0 — cast identity bootstrap ──────────────────────────────────
+    // A cast member with NO identity references leaves the engine's identity
+    // mechanism inert (there is no sheet for the "take identity from their own
+    // sheet" directives to point at), so the model re-invents that character from
+    // prose on every frame — the classic per-panel drift. Before the frames run,
+    // generate one reference sheet per ref-less active cast member, mine the
+    // episode's own descriptions into the sheet prompt, and attach the result to
+    // the project cast (and the backing library character) so every frame in THIS
+    // run — and every future run — locks identity to a real image. Best-effort:
+    // a failed sheet never blocks the episode (frames run exactly as before);
+    // only a client cancellation aborts the whole run.
+    const sheets: { characterId: string; name: string; hash: string }[] = [];
+    const needSheets = castNeedingSheets(project, scope);
+    if (needSheets.length) {
+      const sheetGraph = compileCastSheets(project, needSheets, {
+        maxReferences: modelRefCap(rt, project.style.model),
+      });
+      const sheetResult = await runHost.run(runId, {
+        graph: sheetGraph,
+        quality: parsed.data.quality,
+        targets: sheetGraph.nodes.map((n) => n.id),
+        emit: broadcast,
+      });
+      if (sheetResult.status === "cancelled") {
+        status = "cancelled";
+      } else {
+        for (const ch of needSheets) {
+          const nid = sheetNodeId(ch.id);
+          const hash =
+            (sheetResult.nodes.get(nid)?.outputs?.image as { hash?: string } | undefined)?.hash ??
+            sheetResult.produced[nid];
+          if (hash) sheets.push({ characterId: ch.id, name: ch.name, hash });
+        }
+        if (sheets.length) {
+          const hashByChar = new Map(sheets.map((s) => [s.characterId, s.hash]));
+          try {
+            await rt.projects.update(id, (cur) => ({
+              ...cur,
+              // Bank the sheets into the reusable pool so they're visible and
+              // detachable in the UI's reference library (idempotent by hash).
+              library: [
+                ...cur.library,
+                ...[...hashByChar.values()]
+                  .filter((h) => !cur.library.some((a) => a.hash === h))
+                  .map((hash) => ({ hash, label: "" })),
+              ],
+              cast: cur.cast.map((c) =>
+                hashByChar.has(c.id)
+                  ? { ...c, refHashes: leadRef(c.refHashes, hashByChar.get(c.id)!) }
+                  : c,
+              ),
+            }));
+          } catch {
+            /* project vanished mid-run — the frames below still run from a re-read */
+          }
+          // The universe learns the identity too: future episodes cast this
+          // character with a real image instead of re-drifting from prose.
+          await Promise.all(
+            needSheets
+              .filter((ch) => ch.libraryId && hashByChar.has(ch.id))
+              .map((ch) =>
+                rt.library
+                  .appendCharacterRefs(ch.libraryId!, [hashByChar.get(ch.id)!])
+                  .catch(() => undefined),
+              ),
+          );
+        }
+      }
+    }
+
     for (const wave of waves) {
+      if (status !== "done") break; // cancelled during the sheet wave
       // Compile against the LATEST persisted document so this wave's references
       // resolve the images the previous wave just wrote (fall back to the snapshot
       // we already hold if the project vanished mid-run).
@@ -334,6 +425,10 @@ export function registerComicRoutes(
       error,
       generated,
       cached,
+      // Identity sheets generated by the wave-0 bootstrap (empty when every active
+      // cast member already had references). The client adopts these into its
+      // in-memory cast so the UI shows the new refs without a reload.
+      sheets,
       frames: saved.frames.map((f) => ({ id: f.id, resultHash: f.resultHash, variants: f.variants })),
     });
   });
