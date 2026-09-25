@@ -413,6 +413,19 @@ describe("applyDirectorChanges", () => {
     expect(echoing.echoFrameId).toBeUndefined();
   });
 
+  it("deleteFrame clears BOTH links when a frame continued AND echoed the removed frame", () => {
+    const p = project({
+      frames: [
+        { id: "a", prompt: "the opening" },
+        { id: "b", prompt: "the close", continuesFrameId: "a", echoFrameId: "a" },
+      ],
+    });
+    const out = applyDirectorChanges(p, library(), null, [{ op: "deleteFrame", frameIndex: 0 }]);
+    const f = out.project.frames.find((x) => x.id === "b")!;
+    expect(f.continuesFrameId).toBeUndefined();
+    expect(f.echoFrameId).toBeUndefined();
+  });
+
   it("updates the series concept and reports it in the library", () => {
     const s = series({ concept: "old" });
     const lib = library();
