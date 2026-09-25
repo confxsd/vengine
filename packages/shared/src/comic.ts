@@ -381,6 +381,62 @@ export function referenceDirective(mode: ReferenceMode, hasIdentitySheets = fals
     : "Reference images: reproduce the composition, camera angle and layout of the reference image(s), changing only what the description above specifies.";
 }
 
+/**
+ * The named mapping of the frame's fed reference images — "images 2-3: Bruce
+ * Wayne (identity sheet)" — appended under the reference directives. Attached
+ * sheets are anonymous pixels until the prompt says WHO each image is: without
+ * the mapping a multi-reference model must guess which face belongs to which
+ * character from similarity alone, and likeness bleeds between characters (a
+ * documented failure mode of multi-subject reference generation). Order here
+ * MUST mirror `frameReferences` exactly — echo, continuity, own refs, then each
+ * active cast member's sheets (capped as there), then style anchors — with
+ * 1-based image numbers. An open-ended trailing clause covers the style anchors
+ * so the sentence stays true even when the model's reference cap trimmed them.
+ * Returns "" when the frame feeds no references at all.
+ */
+export function referenceRoster(project: ComicProject, frame: ComicFrame): string {
+  const parts: string[] = [];
+  let n = 0;
+  if (echoReferences(project, frame).length > 0) {
+    n += 1;
+    parts.push(`image ${n}: the opening composition to mirror (framing and figure placement only)`);
+  }
+  if (continuityReferences(project, frame).length > 0) {
+    n += 1;
+    parts.push(`image ${n}: the previous panel of this scene (setting, light and palette — not a layout to copy)`);
+  }
+  for (let i = 0; i < frame.refHashes.length; i++) {
+    n += 1;
+    parts.push(
+      `image ${n}: this frame's own ${frame.referenceMode === "match" ? "composition" : "look"} reference`,
+    );
+  }
+  for (const c of activeCastMembers(project, frame)) {
+    const sheets = Math.min(c.refHashes.length, MAX_REFS_PER_CHARACTER);
+    if (sheets <= 0) continue;
+    const who = c.name.trim() || "unnamed cast member";
+    if (sheets === 1) {
+      n += 1;
+      parts.push(`image ${n}: ${who} (identity sheet)`);
+    } else {
+      parts.push(`images ${n + 1}-${n + sheets}: ${who} (identity sheets)`);
+      n += sheets;
+    }
+  }
+  if (!parts.length) {
+    // Anchors only: say so, or the model may copy a person out of a style still.
+    return selectStyleAnchors(project, frame).length
+      ? "The attached images are style/look anchors only — none of them is a character; do not copy any person or creature from them."
+      : "";
+  }
+  // The open-ended anchors clause only when the pack has anchors at all — with a
+  // reference-less project the fed set ends at the last named image.
+  const tail = styleReferences(project.style).length
+    ? "; the remaining images are style/look anchors, not characters"
+    : "";
+  return `Reference images, in order — ${parts.join("; ")}${tail}.`;
+}
+
 /** A frame's current still image: the selected result, else its newest variant. */
 export function frameImageHash(frame: ComicFrame): string | undefined {
   return frame.resultHash ?? frame.variants.at(-1)?.hash;
@@ -719,8 +775,9 @@ export function artDirectionLines(plan: EpisodePlan | undefined): string[] {
  *
  * v2 block order (spec §5): template → art direction (plan) → craft (role-flavored)
  * → camera → mood → palette → transition (gutter) → exactly one composition-governing
- * directive (echo > continuity > plain reference). Every block is drop-empty, so a
- * project with no plan/role/gutter/echo composes byte-identically to v1.
+ * directive (echo > continuity > plain reference) → the named reference roster
+ * (which fed image is WHO — only when references are fed). Every block is drop-empty,
+ * so a project with no plan/role/gutter/echo composes byte-identically to v1.
  */
 export function composeFramePrompt(project: ComicProject, frame: ComicFrame): string {
   const tokens: Record<string, string> = {
@@ -816,7 +873,13 @@ export function composeFramePrompt(project: ComicProject, frame: ComicFrame): st
     }
   }
   if (!directive) return base;
-  return base ? `${base}\n\n${directive}` : directive;
+  const withDirective = base ? `${base}\n\n${directive}` : directive;
+  // The named image→role mapping rides under whichever directive fired, so a
+  // multi-reference model knows WHICH sheet is WHO (anonymous sheets bleed
+  // likeness between characters). Present exactly when references are fed — the
+  // same sets the directive selection above gates on.
+  const roster = referenceRoster(project, frame);
+  return roster ? `${withDirective}\n\n${roster}` : withDirective;
 }
 
 /**
@@ -838,15 +901,30 @@ export function styleReferences(style: ComicStyle): ComicReference[] {
  * action two-shots, weather, warm/cold color scripts), but a frame should be
  * steered by a *focused* few — the ones teaching what this frame needs — and on
  * reference-capped models only a couple of style slots exist at all once cast
- * refs take theirs. So the compiler picks per frame: score each anchor by how
- * its `tags` overlap the frame's shot size / role / prompt vocabulary, keep the
- * best few, and let the model's reference cap bound the budget. Untagged packs
- * behave exactly as before (pack order, first-N).
+ * refs take theirs. Selection is CORE-FIRST: the frame's thread elects a stable
+ * core (same-scene frames cannot draw contradictory anchors), the frame's own
+ * shot/role/prompt vocabulary fills the rest, and the model's reference cap
+ * bounds the budget. Untagged packs behave exactly as before (pack order,
+ * first-N).
  */
 
 /** Most style anchors fed to any one frame. A focused set steers harder than the
  *  whole pack — and every ref is an inline base64 image on the request. */
 export const STYLE_ANCHORS_PER_FRAME = 3;
+
+/**
+ * How many of a frame's anchor slots are elected by the frame's THREAD (its
+ * storyline — or the whole episode when unthreaded) rather than by that single
+ * frame's own vocabulary. Purely per-frame selection lets two frames of the SAME
+ * scene draw contradictory anchors (a candlelit parlor pulling the cold rooftop
+ * lightning still via its "low-angle rim-lit" words) — the per-frame style set
+ * flips and the scene's look drifts panel to panel. So selection is core-first:
+ * `STYLE_CORE_PER_THREAD` anchors chosen on thread-wide tag overlap are shared by
+ * every same-thread frame (a stable look core), and the remaining slots stay
+ * free for per-shot teaching (the close-up anchor still rides along on the
+ * close-up). Uncapped-model default 2 of 3.
+ */
+export const STYLE_CORE_PER_THREAD = 2;
 
 /** Model-side reference cap callers pass in (from the model manifest) so style
  *  anchors fit the slots left after echo/continuity/cast refs. Omitted on
@@ -887,7 +965,7 @@ const ANCHOR_TAG_HINTS: Record<string, RegExp> = {
   lowangle: /low[- ]angle|from below|worm'?s[- ]eye/i,
   establish: /\bestablish|\bvista\b|sprawls|\bhorizon\b/i,
   interior:
-    /interior|inside|\broom\b|\boffice\b|manor|penthouse|\bstudy\b|gallery|laborator|\blab\b|boardroom|warehouse|apartment|\bcave\b|ballroom/i,
+    /interior|inside|\broom\b|\boffice\b|manor|penthouse|\bstudy\b|gallery|laborator|\blab\b|boardroom|warehouse|apartment|\bcave\b|ballroom|\bparlor\b|\bparlour\b|\bshop\b|\bstore\b|café|cafe|\btavern\b|\bbar\b|\bdiner\b|\btent\b|\btemple\b|kitchen|corridor|hallway|\bbasement\b|\battic\b|\blobby\b|\bcabin\b|\bcastle\b|\bthrone\b|\bhotel\b/i,
   city: /\bskyline\b|\bgcpd\b|downtown/i,
   alley: /\balley\b/i,
   street: /\bstreet\b|sidewalk/i,
@@ -931,12 +1009,40 @@ function frameAnchorTags(project: ComicProject, frame: ComicFrame): Set<string> 
 }
 
 /**
- * The style anchors that should steer THIS frame: relevance-ranked (tag overlap
- * with the frame's shot/role/prompt), capped at `slots` — or, when a model
- * budget bounds it, at the slots left after the frame's echo/continuity/own/cast
- * references. Chosen anchors keep pack order (earlier pack position steers
- * harder); untagged anchors score 0 and fall back to pack order, so a pack
- * without tags behaves exactly like the old append-everything-then-truncate.
+ * The anchor tags wanted by the frame's whole THREAD: the union of every
+ * same-thread frame's own tags ("" / undefined share the episode's main
+ * storyline; the shared text — settings, story mood, plan — is counted in each
+ * and deduped by the set). This is the vocabulary a thread's core anchors must
+ * serve; per-frame nuance stays in `frameAnchorTags`.
+ */
+export function threadAnchorTags(project: ComicProject, frame: ComicFrame): Set<string> {
+  const thread = frame.thread ?? "";
+  const tags = new Set<string>();
+  for (const f of project.frames) {
+    if ((f.thread ?? "") !== thread) continue;
+    for (const t of frameAnchorTags(project, f)) tags.add(t);
+  }
+  return tags;
+}
+
+/**
+ * The style anchors that should steer THIS frame — core-first (spec: consistency
+ * within a storyline, contrast between them):
+ *
+ *   1. CORE — the best `STYLE_CORE_PER_THREAD` anchors by THREAD-wide tag
+ *      overlap (`threadAnchorTags`), pack order breaking ties. Every same-thread
+ *      frame elects the same core, so a scene's room/light anchors cannot flip
+ *      panel to panel, and interleaved storylines read distinct (the street
+ *      thread elects street anchors, the parlor thread interior ones).
+ *   2. FILL — remaining slots by the frame's OWN tag overlap, then thread
+ *      overlap, then pack order — the per-shot teaching (a close-up still pulls
+ *      the close-up anchor into its fill slot).
+ *
+ * The union is returned in PACK order (earlier pack position steers harder).
+ * Untagged anchors all score 0 on both axes, so core + fill collapse to plain
+ * pack order — byte-identical to the old append-everything-then-truncate for
+ * packs without tags. `slots` caps the set (the model's remaining reference
+ * budget); 0 → [].
  */
 export function selectStyleAnchors(
   project: ComicProject,
@@ -947,17 +1053,23 @@ export function selectStyleAnchors(
   if (!anchors.length) return [];
   const max = Math.max(0, slots ?? STYLE_ANCHORS_PER_FRAME);
   if (max === 0) return [];
-  const wanted = frameAnchorTags(project, frame);
+  const own = frameAnchorTags(project, frame);
+  const thread = threadAnchorTags(project, frame);
   const scored = anchors.map((ref, i) => ({
     ref,
     i,
-    score: (ref.tags ?? []).reduce((sum, t) => sum + (wanted.has(t) ? 1 : 0), 0),
+    ownScore: (ref.tags ?? []).reduce((sum, t) => sum + (own.has(t) ? 1 : 0), 0),
+    threadScore: (ref.tags ?? []).reduce((sum, t) => sum + (thread.has(t) ? 1 : 0), 0),
   }));
-  scored.sort((a, b) => b.score - a.score || a.i - b.i);
-  return scored
-    .slice(0, max)
-    .sort((a, b) => a.i - b.i)
-    .map((s) => s.ref);
+  const byThread = [...scored].sort((a, b) => b.threadScore - a.threadScore || a.i - b.i);
+  const coreCount = Math.min(max, STYLE_CORE_PER_THREAD);
+  const core = byThread.slice(0, coreCount);
+  const coreIdx = new Set(core.map((c) => c.i));
+  const fill = scored
+    .filter((s) => !coreIdx.has(s.i))
+    .sort((a, b) => b.ownScore - a.ownScore || b.threadScore - a.threadScore || a.i - b.i)
+    .slice(0, max - coreCount);
+  return [...core, ...fill].sort((a, b) => a.i - b.i).map((s) => s.ref);
 }
 
 /**
@@ -1176,14 +1288,22 @@ export function identityReferences(
   return [...byHash.values()];
 }
 
+/** The cast members active in one frame (tri-state membership via `characterIds`:
+ *  undefined = whole cast, [] = none, [ids] = that subset; unknown ids ignored).
+ *  Shared by `castReferences` and the sheet-bootstrap planner. */
+export function activeCastMembers(
+  project: ComicProject,
+  frame: ComicFrame,
+): ComicCharacter[] {
+  const ids = frame.characterIds;
+  return ids === undefined ? project.cast : project.cast.filter((c) => ids.includes(c.id));
+}
+
 /** The active cast's identity refs (tri-state membership via `characterIds`),
  *  each character capped at `MAX_REFS_PER_CHARACTER` so one big sheet can't
  *  monopolise the reference budget. */
 function castReferences(project: ComicProject, frame: ComicFrame): ComicReference[] {
-  const ids = frame.characterIds;
-  const activeCast =
-    ids === undefined ? project.cast : project.cast.filter((c) => ids.includes(c.id));
-  return activeCast.flatMap((c) =>
+  return activeCastMembers(project, frame).flatMap((c) =>
     c.refHashes
       .slice(0, MAX_REFS_PER_CHARACTER)
       .map((hash) => ({ hash, weight: DEFAULT_REFERENCE_WEIGHT })),
@@ -1252,6 +1372,150 @@ export function frameLoras(project: ComicProject, frame: ComicFrame): ComicLora[
     if (lora.path.trim() && !byPath.has(lora.path)) byPath.set(lora.path, lora);
   }
   return [...byPath.values()];
+}
+
+/* ─── Cast identity bootstrap (generated reference sheets) ─────────────────
+ *
+ * The engine's whole character-consistency mechanism — cast `refHashes` fed as
+ * references + directives telling the model to take "each character's identity
+ * from their own sheet" — silently no-ops for a cast member with NO refs: the
+ * model then re-invents that character from prose on every frame, which is the
+ * classic "Selina wears a different outfit in every panel" drift. Sheets were
+ * only ever hand-made (upload a portrait, bank a frame). These helpers let the
+ * runner close the gap itself: detect ref-less cast active in the frames about
+ * to generate, mine the episode's own descriptions of each character into a
+ * reference-sheet prompt, compile one generation node per sheet, and (caller's
+ * job) persist the result into the cast entry — and the backing library
+ * character, so the whole universe learns the identity once.
+ */
+
+/** Stable compiled node id for a cast member's generated reference sheet. Not a
+ *  frame node: `frameIdFromNodeId` deliberately doesn't match it, so live sheet
+ *  previews don't route to any frame (the sheet persists into the cast). */
+export const sheetNodeId = (characterId: string): string => `sheet-${characterId}`;
+
+/** Escape a name/alias for an embedded word-boundary regex match. */
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * The generation prompt for a cast member's identity sheet. The character's
+ * visual definition is mined from the episode itself — every frame-prompt
+ * sentence naming them (or an alias) in frames where they're active — because
+ * that recurring text IS the design the frames agree on (face, build, wardrobe
+ * signature); a project cast entry carries no description of its own. The sheet
+ * is staged on a plain neutral background with even light so it teaches
+ * IDENTITY only: scene, lighting or posing borrowed from a source panel would
+ * leak into every later frame that uses the sheet.
+ */
+export function characterSheetPrompt(
+  project: ComicProject,
+  character: ComicCharacter,
+): string {
+  const names = [character.name, ...character.aliases]
+    .map((n) => n.trim())
+    .filter(Boolean);
+  const sentences: string[] = [];
+  outer: for (const frame of project.frames) {
+    if (!activeCastMembers(project, frame).some((c) => c.id === character.id)) continue;
+    for (const sentence of frame.prompt.split(/(?:[.!?]\s+|\n+)/)) {
+      const s = sentence.trim();
+      if (!s) continue;
+      const hit = names.some((n) =>
+        new RegExp(`\\b${escapeRegExp(n)}\\b`, "i").test(s),
+      );
+      if (hit && !sentences.includes(s)) sentences.push(s);
+      if (sentences.length >= 5) break outer;
+    }
+  }
+  const describes = sentences.join(" ").slice(0, 700);
+  const name = character.name.trim() || "the character";
+  const lead = describes
+    ? `${name} — exactly this character as described: ${describes}`
+    : `${name}, this episode's recurring character`;
+  return `${lead}. Character reference sheet: one full-body figure standing relaxed on a plain light-grey studio background, with a large clear head-and-shoulders portrait of the same face beside it. Same art style as the attached style references. Neutral even lighting; no scene, no props, no other figures, no action, no text or labels.`;
+}
+
+/** Options for `compileCastSheets`. */
+export interface CompileCastSheetsOptions {
+  /** The generation model's reference cap — bounds the style-anchor set a sheet
+   *  carries, mirroring `compileComic`. */
+  maxReferences?: number;
+}
+
+/**
+ * The cast members that should get a generated identity sheet before the frames
+ * run: active in at least one of the selected frames AND carrying no identity
+ * refs of their own (the inert-identity-mechanism case above). Project cast
+ * order, deduped. Empty when every active cast member already has refs — the
+ * common case after the first bootstrap.
+ */
+export function castNeedingSheets(
+  project: ComicProject,
+  frameIds: readonly string[],
+): ComicCharacter[] {
+  const selected = new Set(frameIds);
+  const active = new Set(
+    project.frames
+      .filter((f) => selected.has(f.id))
+      .flatMap((f) => activeCastMembers(project, f).map((c) => c.id)),
+  );
+  return project.cast.filter((c) => active.has(c.id) && c.refHashes.length === 0);
+}
+
+/**
+ * Lower "generate identity sheets for these cast members" to a runnable
+ * GraphDocument: one generation node per character (`sheetNodeId`), no export
+ * nodes — the hashes are read back from the run result and persisted into the
+ * cast/library by the caller. References are the relevance-selected STYLE
+ * anchors only — a sheet must teach the house look, never another character's
+ * likeness — and LoRAs the project's style LoRAs only, for the same reason.
+ * Seed is the project's locked style seed, so re-bootstrapping the same text
+ * reproduces the same sheet (content-addressed cache-friendly).
+ */
+export function compileCastSheets(
+  project: ComicProject,
+  characters: readonly ComicCharacter[],
+  opts: CompileCastSheetsOptions = {},
+): GraphDocument {
+  const { style } = project;
+  const nodes = characters.map((c) => {
+    const prompt = characterSheetPrompt(project, c);
+    const anchorSlots = opts.maxReferences
+      ? Math.min(STYLE_ANCHORS_PER_FRAME, opts.maxReferences)
+      : undefined;
+    // A pseudo-frame carrying just the sheet prompt, so anchor relevance keys off
+    // the character's own vocabulary (interior words → interior anchors, …).
+    const pseudo: ComicFrame = { id: sheetNodeId(c.id), prompt, variants: [], refHashes: [] };
+    const references = selectStyleAnchors(project, pseudo, anchorSlots);
+    const loras = style.loras
+      .filter((l) => l.path.trim())
+      .map((l) => ({ path: l.path, scale: l.scale }));
+    return {
+      id: sheetNodeId(c.id),
+      type: "generate.text-to-image",
+      position: { x: 0, y: 0 },
+      params: {
+        model: style.model,
+        prompt,
+        negativePrompt: style.negative,
+        width: style.width,
+        height: style.height,
+        seed: style.seed,
+        ...(references.length ? { references } : {}),
+        ...(loras.length ? { loras } : {}),
+      },
+      title: `Sheet · ${c.name || c.id}`,
+    };
+  });
+  return GraphDocumentSchema.parse({
+    version: 1,
+    id: `comic-${project.id}-sheets`,
+    name: `${project.name} · cast sheets`,
+    nodes,
+    edges: [],
+  });
 }
 
 // ---------------------------------------------------------------------------

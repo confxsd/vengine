@@ -46,6 +46,11 @@ import {
   DEFAULT_NEGATIVE,
   DEFAULT_WIDTH,
   DEFAULT_HEIGHT,
+  castNeedingSheets,
+  characterSheetPrompt,
+  compileCastSheets,
+  sheetNodeId,
+  referenceRoster,
   type ComicFrame,
   type ComicProject,
 } from "./comic.js";
@@ -907,7 +912,7 @@ describe("composeFramePrompt v2 — golden (pre-plan projects compose byte-ident
     );
   });
 
-  it("old-style continuation project: v1 order with the continuity directive trailing", () => {
+  it("old-style continuation project: v1 order with the continuity directive trailing, plus the reference roster", () => {
     const img = "d".repeat(64);
     const p = project({
       frames: [
@@ -925,6 +930,10 @@ describe("composeFramePrompt v2 — golden (pre-plan projects compose byte-ident
         CRAFT_GOLDEN,
         "",
         continuityDirective("restage"),
+        "",
+        // The roster maps the fed image even when the pack has no anchors — the
+        // trailing anchors clause is dropped (nothing is fed after the panel).
+        "Reference images, in order — image 1: the previous panel of this scene (setting, light and palette — not a layout to copy).",
       ].join("\n"),
     );
   });
@@ -1334,5 +1343,253 @@ describe("per-frame style-anchor selection", () => {
     });
     const refs = frameReferences(p, p.frames[0]!, { maxReferences: 4 });
     expect(refs.map((r) => r.hash)).toEqual([hh(21), hh(22), hh(30), hh(31)]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Thread-core anchor election — same-scene frames cannot draw contradictory
+// anchors (the "candlelit parlor steered by cold rooftop lightning" drift).
+// ---------------------------------------------------------------------------
+describe("thread-core style-anchor election", () => {
+  const hh = (n: number) => n.toString(36).padStart(64, "x");
+  const pack = [
+    { hash: hh(1), weight: 1, label: "gas-lamp street", tags: ["street", "night", "cold"] },
+    { hash: hh(2), weight: 1, label: "rooftop lightning", tags: ["lowangle", "storm", "action"] },
+    { hash: hh(3), weight: 1, label: "warm interior", tags: ["interior", "warm", "twoshot"] },
+    { hash: hh(4), weight: 1, label: "boardroom interior", tags: ["interior", "medium"] },
+    { hash: hh(5), weight: 1, label: "red-sun rooftop", tags: ["twoshot", "warm"] },
+  ];
+  const withPack = (frames: Record<string, unknown>[]) =>
+    project({ style: { ...project().style, anchors: pack }, frames });
+
+  it("parlor (interior vocabulary) now wants interior anchors", () => {
+    const p = withPack([{ id: "a", prompt: "inside the fortune teller's parlor, candles burning" }]);
+    // The extended interior hint: 'parlor' maps onto the interior category.
+    const picked = selectStyleAnchors(p, p.frames[0]!);
+    expect(picked.map((a) => a.hash)).toContain(hh(3));
+    expect(picked.map((a) => a.hash)).toContain(hh(4));
+  });
+
+  it("same-thread frames share the elected core even when their own tags differ", () => {
+    const p = withPack([
+      // develop: plain interior beat
+      { id: "a", prompt: "inside the cramped parlor, the teller deals the cards", thread: "parlor" },
+      // turn: low-angle rim-lit — own tags pull the OUTDOOR action anchor…
+      {
+        id: "b",
+        prompt: "the teller shrinks as Bruce looms, rim-lit across the card table",
+        camera: "low-angle shot looking up",
+        role: "turn",
+        thread: "parlor",
+      },
+    ]);
+    const a = selectStyleAnchors(p, p.frames[0]!);
+    const b = selectStyleAnchors(p, p.frames[1]!);
+    // The core is elected from the thread's UNION vocabulary, so both frames feed
+    // the exact same leading anchors — the scene's look cannot flip panel to
+    // panel (the turn's action anchor is in BOTH frames' cores, never one).
+    expect(a.slice(0, 2).map((x) => x.hash)).toEqual(b.slice(0, 2).map((x) => x.hash));
+    // The parlor keeps its room anchor in both sets — the interior thread never
+    // loses the interior/warm teaching to the turn's action vocabulary.
+    expect(a.map((x) => x.hash)).toContain(hh(3));
+    expect(b.map((x) => x.hash)).toContain(hh(3));
+  });
+
+  it("different threads elect different cores (contrast between storylines)", () => {
+    const p = withPack([
+      { id: "a", prompt: "a rain-slicked street, lamppost haze", thread: "street" },
+      { id: "b", prompt: "inside the warm parlor, candlelight", thread: "parlor" },
+    ]);
+    const streetCore = selectStyleAnchors(p, p.frames[0]!).slice(0, 2).map((x) => x.hash);
+    const parlorCore = selectStyleAnchors(p, p.frames[1]!).slice(0, 2).map((x) => x.hash);
+    expect(streetCore).not.toEqual(parlorCore);
+    expect(streetCore).toContain(hh(1));
+  });
+
+  it("a one-slot budget still holds the shared thread core (stability at any cap)", () => {
+    const p = withPack([
+      { id: "a", prompt: "inside the cramped parlor", thread: "parlor" },
+      { id: "b", prompt: "the teller shrinks, rim-lit", role: "turn", thread: "parlor" },
+    ]);
+    // Whatever the cap, both frames are steered by the SAME anchor.
+    const oneA = selectStyleAnchors(p, p.frames[0]!, 1);
+    const oneB = selectStyleAnchors(p, p.frames[1]!, 1);
+    expect(oneB).toEqual(oneA);
+    expect(oneB.map((x) => x.hash)).toEqual([hh(2)]);
+  });
+
+  it("untagged packs collapse to legacy pack order (core + fill all score 0)", () => {
+    const legacy = Array.from({ length: 4 }, (_, i) => ({ hash: hh(40 + i), weight: 1 }));
+    const p = project({
+      style: { ...project().style, anchors: legacy },
+      frames: [
+        { id: "a", prompt: "one" },
+        { id: "b", prompt: "two" },
+      ],
+    });
+    expect(selectStyleAnchors(p, p.frames[1]!).map((x) => x.hash)).toEqual([
+      hh(40), hh(41), hh(42),
+    ]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Cast identity bootstrap — generated reference sheets for ref-less cast.
+// ---------------------------------------------------------------------------
+describe("cast identity bootstrap (generated character sheets)", () => {
+  const hh = (n: number) => n.toString(36).padStart(64, "x");
+  const cast = [
+    { id: "bruce", name: "Bruce Wayne", aliases: ["batman"], refHashes: [hh(1)] },
+    { id: "selina", name: "Selina Kyle", aliases: ["Selina"], refHashes: [] },
+    { id: "teller", name: "", aliases: ["the teller"], refHashes: [] },
+  ];
+  const withCast = (frames: Record<string, unknown>[]) => project({ cast, frames });
+
+  it("castNeedingSheets: ref-less cast active in the selection, project order, deduped", () => {
+    const p = withCast([
+      { id: "a", prompt: "one", characterIds: ["selina"] },
+      { id: "b", prompt: "two", characterIds: ["teller"] },
+      { id: "c", prompt: "three", characterIds: [] },
+    ]);
+    expect(castNeedingSheets(p, ["a", "b"]).map((c) => c.id)).toEqual(["selina", "teller"]);
+    // Outside the selection → not needed; a Bruce-only run needs nobody.
+    expect(castNeedingSheets(p, ["c"])).toEqual([]);
+  });
+
+  it("castNeedingSheets: undefined membership means the whole cast", () => {
+    const p = withCast([{ id: "a", prompt: "one" }]);
+    expect(castNeedingSheets(p, ["a"]).map((c) => c.id)).toEqual(["selina", "teller"]);
+  });
+
+  it("characterSheetPrompt mines the character's own sentences (name or alias)", () => {
+    const p = withCast([
+      {
+        id: "a",
+        prompt:
+          "Selina Kyle smirks in a violet dress suit. The rain soaks the street. Selina twirls a stolen card.",
+        characterIds: ["selina"],
+      },
+    ]);
+    const out = characterSheetPrompt(p, cast[1]!);
+    expect(out).toContain("Selina Kyle smirks in a violet dress suit");
+    expect(out).toContain("Selina twirls a stolen card");
+    expect(out).not.toContain("The rain soaks the street");
+    expect(out).toContain("Character reference sheet");
+    expect(out).toContain("no text or labels");
+  });
+
+  it("characterSheetPrompt matches aliases and falls back cleanly on no hits", () => {
+    const p = withCast([
+      { id: "a", prompt: "Batman looms over the contact. A neon sign hums.", characterIds: ["teller"] },
+    ]);
+    // "teller" is the teller's alias but appears in no sentence → the fallback
+    // lead still names her; the sheet craft directives are always present.
+    const out = characterSheetPrompt(p, cast[2]!);
+    expect(out).toMatch(/^the character/);
+    expect(out).toContain("plain light-grey studio background");
+  });
+
+  it("compileCastSheets: one style-only node per character, locked to the house look", () => {
+    const p = project({
+      style: {
+        ...project().style,
+        seed: 42,
+        loras: [{ path: "style.safetensors", scale: 0.9, name: "house" }],
+      },
+      cast: [
+        { id: "s", name: "Selina Kyle", aliases: [], refHashes: [] },
+        { id: "t", name: "Teller", aliases: [], refHashes: [] },
+      ],
+      frames: [{ id: "a", prompt: "Selina Kyle at the dock", characterIds: ["s"] }],
+    });
+    const graph = compileCastSheets(p, castNeedingSheets(p, ["a"]), { maxReferences: 5 });
+    expect(graph.nodes.map((n) => n.id)).toEqual([sheetNodeId("s")]);
+    const node = graph.nodes[0]!;
+    expect(node.type).toBe("generate.text-to-image");
+    expect(node.params!.seed).toBe(42);
+    expect(node.params!.prompt).toContain("Selina Kyle at the dock".slice(0, 11));
+    // Style LoRA rides along; there are NO cast references to leak a likeness.
+    expect(node.params!.loras).toEqual([{ path: "style.safetensors", scale: 0.9 }]);
+    expect(node.params!.references).toBeUndefined(); // default style has no anchors
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The reference roster — the fed sheets are NAMED, so a multi-reference model
+// knows which image is WHO instead of guessing and bleeding likeness.
+// ---------------------------------------------------------------------------
+describe("referenceRoster (the named image → role mapping)", () => {
+  const hh = (n: number) => n.toString(36).padStart(64, "x");
+  const base = (frames: Record<string, unknown>[], cast: Record<string, unknown>[] = []) =>
+    project({
+      cast,
+      style: { ...project().style, anchors: [{ hash: hh(9), weight: 1 }] },
+      frames,
+    });
+
+  it("names each cast member's sheets in fed order after the continuity image", () => {
+    const p = base(
+      [
+        { id: "a", prompt: "first", resultHash: hh(1) },
+        {
+          id: "b",
+          prompt: "second",
+          continuesFrameId: "a",
+          refHashes: [hh(5)],
+          characterIds: ["b", "c"],
+        },
+      ],
+      [
+        { id: "b", name: "Bruce Wayne", refHashes: [hh(2), hh(3)] },
+        { id: "c", name: "Selina Kyle", refHashes: [hh(4)] },
+      ],
+    );
+    // Fed order: continuity, own ref, Bruce ×2, Selina ×1, then the anchor.
+    expect(referenceRoster(p, p.frames[1]!)).toBe(
+      "Reference images, in order — " +
+        "image 1: the previous panel of this scene (setting, light and palette — not a layout to copy); " +
+        "image 2: this frame's own look reference; " +
+        "images 3-4: Bruce Wayne (identity sheets); " +
+        "image 5: Selina Kyle (identity sheet); " +
+        "the remaining images are style/look anchors, not characters.",
+    );
+  });
+
+  it("echo bookends label the mirrored opening first", () => {
+    const p = base(
+      [
+        { id: "a", prompt: "opening", resultHash: hh(1) },
+        { id: "b", prompt: "bookend", echoFrameId: "a" },
+      ],
+      [{ id: "b", name: "Bruce Wayne", refHashes: [hh(2)] }],
+    );
+    expect(referenceRoster(p, p.frames[1]!)).toBe(
+      "Reference images, in order — " +
+        "image 1: the opening composition to mirror (framing and figure placement only); " +
+        "image 2: Bruce Wayne (identity sheet); " +
+        "the remaining images are style/look anchors, not characters.",
+    );
+  });
+
+  it("anchor-only frames warn against copying a person out of a style still", () => {
+    const p = base([{ id: "a", prompt: "a vista", characterIds: [] }]);
+    expect(referenceRoster(p, p.frames[0]!)).toBe(
+      "The attached images are style/look anchors only — none of them is a character; do not copy any person or creature from them.",
+    );
+  });
+
+  it("returns empty when the frame feeds no references at all", () => {
+    const p = project({ frames: [{ id: "a", prompt: "x" }] });
+    expect(referenceRoster(p, p.frames[0]!)).toBe("");
+  });
+
+  it("composeFramePrompt appends the roster under the reference directive", () => {
+    const p = base(
+      [{ id: "a", prompt: "a beat" }],
+      [{ id: "b", name: "Bruce Wayne", refHashes: [hh(2)] }],
+    );
+    const out = composeFramePrompt(p, p.frames[0]!);
+    expect(out).toContain(referenceDirective("compose"));
+    expect(out).toContain("image 1: Bruce Wayne (identity sheet)");
   });
 });
