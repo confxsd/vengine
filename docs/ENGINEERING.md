@@ -748,3 +748,36 @@ and logs it) and `updateFrame` extensions (`role`, `gutter`, `echoFrameIndex`, a
 targets skipped & surfaced). The director's context carries the plan and per-frame role/gutter/echo,
 and the system prompt critiques against the plan ("P3 isn't reading as the turn"). `deleteFrame`
 clears echo links to the removed frame, like continuity links.
+
+**Hardening pass (2026-09-25, same day).** Adversarial review of the above; fixes and their record:
+
+- **Sanitizer deviation, made explicit:** a first beat's `role` is KEPT (the slot map's P1 slot is
+  `establish` — dropping it would fight the parse prompt); only `gutter`/`echo` are dropped on the
+  first beat. Spec §4 worded accordingly.
+- **Reconciliation on edit, not just apply.** The spec states the §3.3 rule for parse application;
+  the Studio gutter picker *promises* the same semantics in its tooltip, so a gutter patch now runs
+  `gutterReconcile` over the strip (idempotent — one edit also heals drift from reorders or older
+  builds). `gutterReconcile` additionally treats a junk self-link under a linking gutter as "no
+  link" (it auto-links to the predecessor instead of preserving a link compile would drop anyway).
+  The director's `updateFrame.gutter` stays *explicit* (no hidden reconcile): the model has separate
+  link ops and can deliberately combine them.
+- **`deleteFrame`/`removeFrame` clear both links independently** — a frame that continued AND echoed
+  the removed beat lost only its continuity link before.
+- **Echo directive identity guard strengthened** (the one deliberate prompt-text change, goldens +
+  spec §5.3 updated): "take each character's identity from their own sheet, **never from how they
+  appear in the mirrored image**" — the echo source leads the reference list, so without the guard
+  an edit-capable model can take likeness from the opening panel's posed figures (the same failure
+  that gave `continuityDirective` its guard).
+- **Pre-apply review notes see the links now** — the DraftModal's stand-in frames carry the
+  continuity/echo links (same strictly-earlier validation as apply), so the both-set contradiction
+  fires before spending anything. Shot-*size* checks still start only in the Studio rail: parses
+  carry no structured camera (shot language lives in the prompt text; see spec §15).
+- **Import-boundary guard** (`packages/shared/src/boundaries.test.ts`): `episode.ts` must stay a
+  leaf (zod only), `director.ts` may import `comic.ts` TYPE-only (the runtime cycle would silently
+  yield undefined enum bindings), `comic.ts` must re-export the vocabulary — plus a runtime probe
+  that dereferences the bindings.
+- **Test coverage closed:** route-level wave integration (`run twice → second run free`,
+  wave-boundary event ordering, dead-link runs, deterministic cancel-mid-wave via a stub RunHost),
+  both-dependency and self-link `partitionWaves` cases, the client apply path (`draftToFrames` —
+  now exported and tested in the web package), the DraftModal-shaped `rhythmWarnings` stand-ins,
+  the §14 prompt-length ceiling (~2.2k chars fully loaded, ceiling 2600), and both-links deletion.
