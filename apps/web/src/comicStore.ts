@@ -226,11 +226,12 @@ function matchCast(cast: ComicCharacter[]): Map<string, string> {
 }
 
 /** Turn a parsed draft into frame documents mapped onto the given cast. Pure — used
- *  by both `applyDraft` (into the current project) and `importStory` (a new episode).
- *  Structure fields ride along: roles (from the beat, else the plan's slot map),
- *  gutters (beats 2+), and echo/continuity links (validated strictly-earlier),
- *  with `gutterReconcile` run last so a typed gutter never contradicts a link. */
-function draftToFrames(parse: DraftParse, cast: ComicCharacter[]): ComicFrame[] {
+ *  by both `applyDraft` (into the current project) and `importStory` (a new episode),
+ *  and exported for the apply-path tests. Structure fields ride along: roles (from
+ *  the beat, else the plan's slot map), gutters (beats 2+), and echo/continuity
+ *  links (validated strictly-earlier), with `gutterReconcile` run last so a typed
+ *  gutter never contradicts a link. */
+export function draftToFrames(parse: DraftParse, cast: ComicCharacter[]): ComicFrame[] {
   const byName = matchCast(cast);
   const frames: ComicFrame[] = parse.frames.map((f, i) => {
     const ids = [
@@ -734,8 +735,9 @@ export const useComic = create<ComicState>((set, get) => {
         // A gutter edit keeps the reconciliation promise its picker states:
         // moment/action/subject hold the previous scene as reference, scene/
         // aspect/nonsequitur break from it. `gutterReconcile` is idempotent and
-        // only touches frames carrying a gutter, so re-running it over the strip
-        // settles the edited frame without disturbing anything else.
+        // runs over the strip, so every guttered frame's link stays consistent
+        // with its type — one edit also heals drift left by reorders or an
+        // older build (a guttered frame without its link, or vice versa).
         return { ...p, frames: "gutter" in patch ? gutterReconcile(frames) : frames };
       }),
     setFrameContinuation: (frameId, sourceId) =>
