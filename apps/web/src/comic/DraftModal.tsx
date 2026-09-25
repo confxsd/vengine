@@ -296,7 +296,8 @@ export function DraftModal({ onClose, initialSeriesId }: Props) {
                             <img
                               key={a.hash}
                               src={api.thumbUrl(a.hash)}
-                              alt="style anchor"
+                              alt={a.label ?? "style anchor"}
+                              title={a.label ?? "style anchor"}
                               className="h-10 w-10 rounded-md border border-border object-cover"
                             />
                           ))}

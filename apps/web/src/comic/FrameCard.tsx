@@ -184,11 +184,14 @@ export function FrameCard({ frame, index, total }: Props) {
 
   // Reference-cap warning: the selected model truncates references past its limit
   // (tail-first — style refs go before cast). The exact set the compiler feeds is
-  // `frameReferences`, so count that and warn before a run silently drops one.
+  // `frameReferences`, so count that with the same model budget the run passes
+  // (anchors are pre-selected to fit) and warn only if a ref would still drop.
   const models = useComic((s) => s.models);
   const selectedModel = models.find((m) => m.id === project?.style.model);
   const maxRefs = selectedModel?.maxReferences;
-  const refCount = project ? frameReferences(project, frame).length : 0;
+  const refCount = project
+    ? frameReferences(project, frame, maxRefs ? { maxReferences: maxRefs } : undefined).length
+    : 0;
   const refsDropped = maxRefs && refCount > maxRefs ? refCount - maxRefs : 0;
 
   // Drag an image file onto the preview to set it as this frame's output.

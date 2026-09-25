@@ -405,7 +405,11 @@ function StyleRow({ style }: { style: StylePack }) {
               key={a.hash}
               src={api.thumbUrl(a.hash)}
               alt=""
-              title={`Anchor ${i + 1}/${style.anchors.length} — weight ${a.weight}`}
+              title={
+                [a.label, (a.tags ?? []).join(" · "), `weight ${a.weight}`]
+                  .filter(Boolean)
+                  .join(" — ") || `Anchor ${i + 1}/${style.anchors.length}`
+              }
               className="h-14 w-14 rounded-md border border-border object-cover"
             />
           ))}
