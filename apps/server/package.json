@@ -12,6 +12,7 @@
     "clean": "rm -rf dist .turbo",
     "migrate:remote": "tsx scripts/migrate-remote.ts",
     "seed:batman": "tsx scripts/seed-batman.ts",
+    "seed:btas-anchors": "tsx scripts/seed-btas-anchors.ts",
     "story": "tsx scripts/ingest-story.ts"
   },
   "dependencies": {
