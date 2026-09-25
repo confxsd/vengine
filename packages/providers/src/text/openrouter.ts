@@ -18,5 +18,10 @@ export const openrouterModels = {
     displayName: "GLM 5.3 Flash (OpenRouter)",
     baseUrl: OPENROUTER_BASE_URL,
     model: "z-ai/glm-5.3-flash",
+    // GLM thinks before it answers, and OpenRouter bills those thinking tokens
+    // against max_tokens — a chatty turn can exhaust the cap before any visible
+    // content, which comes back empty (finish_reason "length"). Routes that
+    // can't disable reasoning ignore this harmlessly.
+    extraBody: { reasoning: { enabled: false } },
   }),
 } as const;

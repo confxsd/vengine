@@ -61,6 +61,32 @@ describe("deepseek adapter", () => {
     );
     expect(captured.url).toBe("https://api.deepseek.com/beta/chat/completions"); // trailing slash trimmed
   });
+
+  it("merges extraBody verbatim into the request body", async () => {
+    const captured: Captured = {};
+    const alt = createDeepSeekModel({
+      id: "deepseek/alt",
+      displayName: "DeepSeek Alt",
+      extraBody: { reasoning: { enabled: false }, top_k: 5 },
+    });
+    await alt.complete(
+      { messages: [{ role: "user", content: "x" }] },
+      { apiKey: "k", fetch: mockDeepSeekFetch(captured) },
+    );
+    expect(captured.body?.reasoning).toEqual({ enabled: false });
+    expect(captured.body?.top_k).toBe(5);
+  });
+
+  it("explains a length-capped empty response (reasoning consumed the budget)", async () => {
+    const fetchEmpty = (async () =>
+      new Response(
+        JSON.stringify({ choices: [{ message: { content: "" }, finish_reason: "length" }] }),
+        { status: 200 },
+      )) as typeof fetch;
+    await expect(
+      deepseekModels.chat.complete({ messages: [] }, { apiKey: "k", fetch: fetchEmpty }),
+    ).rejects.toThrow(/exhausted max_tokens/);
+  });
 });
 
 describe("TextProviderRegistry", () => {

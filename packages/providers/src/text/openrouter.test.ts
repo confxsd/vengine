@@ -48,4 +48,26 @@ describe("openrouter adapter", () => {
       openrouterModels.glm.complete({ messages: [] }, { apiKey: "k", fetch: fetchErr }),
     ).rejects.toThrow(/402.*Insufficient Balance/s);
   });
+
+  it("asks OpenRouter not to reason (thinking tokens bill against max_tokens)", async () => {
+    const captured: Captured = {};
+    await openrouterModels.glm.complete(
+      { messages: [{ role: "user", content: "hi" }] },
+      { apiKey: "or-secret", fetch: mockOpenRouterFetch(captured) },
+    );
+    expect(captured.body?.reasoning).toEqual({ enabled: false });
+  });
+
+  it("names the token-cap exhaustion when content comes back empty at finish_reason=length", async () => {
+    const fetchEmpty = (async () =>
+      new Response(
+        JSON.stringify({
+          choices: [{ message: { content: "" }, finish_reason: "length" }],
+        }),
+        { status: 200 },
+      )) as typeof fetch;
+    await expect(
+      openrouterModels.glm.complete({ messages: [] }, { apiKey: "k", fetch: fetchEmpty }),
+    ).rejects.toThrow(/exhausted max_tokens.*finish_reason "length"/s);
+  });
 });

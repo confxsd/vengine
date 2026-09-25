@@ -36,11 +36,17 @@ export interface DeepSeekModelConfig {
   baseUrl?: string;
   temperature?: number;
   maxTokens?: number;
+  /**
+   * Extra fields merged verbatim into the request body — the escape hatch for
+   * vendor-specific knobs (e.g. OpenRouter's `reasoning`) without widening the
+   * neutral `TextCompletionInput` contract.
+   */
+  extraBody?: Record<string, unknown>;
 }
 
 /** Shape of DeepSeek's OpenAI-compatible chat-completion response. */
 interface ChatCompletionResponse {
-  choices?: Array<{ message?: { content?: string } }>;
+  choices?: Array<{ message?: { content?: string }; finish_reason?: string }>;
   error?: { message?: string };
 }
 
@@ -72,6 +78,7 @@ export function createDeepSeekModel(config: DeepSeekModelConfig): TextAdapter {
           messages: input.messages,
           temperature: input.temperature ?? config.temperature ?? DEFAULT_TEMPERATURE,
           max_tokens: input.maxTokens ?? config.maxTokens ?? DEFAULT_MAX_TOKENS,
+          ...config.extraBody,
         }),
         signal: ctx.signal,
       });
@@ -81,7 +88,17 @@ export function createDeepSeekModel(config: DeepSeekModelConfig): TextAdapter {
       const data = (await res.json()) as ChatCompletionResponse;
       const text = data.choices?.[0]?.message?.content?.trim();
       if (!text) {
-        throw new Error(data.error?.message ?? `${provider} returned an empty response for ${config.id}`);
+        if (data.error?.message) throw new Error(data.error.message);
+        if (data.choices?.[0]?.finish_reason === "length") {
+          // Reasoning-style models bill their hidden thinking tokens against
+          // max_tokens; when those eat the whole cap, the answer is empty.
+          throw new Error(
+            `${provider} exhausted max_tokens before emitting any content for ${config.id} ` +
+              `(finish_reason "length" — reasoning tokens consumed the completion budget). ` +
+              `Raise maxTokens or disable reasoning for this model.`,
+          );
+        }
+        throw new Error(`${provider} returned an empty response for ${config.id}`);
       }
       return { text, model };
     },
