@@ -21,6 +21,14 @@ type Broadcast = (event: NodeProgressEvent & { kind?: string }) => void;
 const shortId = () => randomUUID().slice(0, 8);
 const MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
 
+/** The generation model's reference cap (undefined when the model is uncapped) —
+ *  bounds the per-frame style-anchor budget at compile time so the compiled
+ *  reference set always fits the endpoint (the adapter's tail-truncate is only
+ *  a backstop). */
+function modelRefCap(rt: Runtime, modelId: string): number | undefined {
+  return rt.providers.list().find((m) => m.id === modelId)?.maxReferences;
+}
+
 /** A fresh comic with a few empty frames to start from. */
 function newProject(name?: string): ComicProject {
   const now = new Date().toISOString();
@@ -183,7 +191,10 @@ export function registerComicRoutes(
     } catch {
       return c.json({ error: "not found" }, 404);
     }
-    const graph = compileComic(project, { exportDir: rt.projects.framesDir(id) });
+    const graph = compileComic(project, {
+      exportDir: rt.projects.framesDir(id),
+      maxReferences: modelRefCap(rt, project.style.model),
+    });
     const targets = parsed.data.frameIds?.map(exportNodeId);
     const plan = await rt.executor.plan(graph, { quality: parsed.data.quality, targets });
     return c.json(plan);
@@ -231,7 +242,10 @@ export function registerComicRoutes(
       } catch {
         /* project vanished mid-run — keep compiling the snapshot we hold */
       }
-      const graph = compileComic(latest, { exportDir: rt.projects.framesDir(id) });
+      const graph = compileComic(latest, {
+        exportDir: rt.projects.framesDir(id),
+        maxReferences: modelRefCap(rt, latest.style.model),
+      });
       const targets = wave.map((f) => exportNodeId(f.id));
 
       // The RunHost captures streamed preview hashes (its `produced` map), so a
@@ -345,7 +359,10 @@ export function registerComicRoutes(
     if (!frame) return c.json({ error: "frame not found" }, 404);
 
     const req = parsed.data;
-    const graph = compileEditFrame(project, frame, req);
+    const graph = compileEditFrame(project, frame, {
+      ...req,
+      maxReferences: modelRefCap(rt, project.style.model),
+    });
     const gid = genNodeId(frameId);
     // Record the seed actually compiled, so a re-selected edit variant reproduces.
     const seed = req.seed ?? frame.seed ?? project.style.seed;
