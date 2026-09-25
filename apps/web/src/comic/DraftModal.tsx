@@ -291,8 +291,8 @@ export function DraftModal({ onClose, initialSeriesId }: Props) {
                     {activePack && activePack.anchors.length > 0 && (
                       <div className="flex items-center gap-2">
                         <span className="shrink-0 text-[10px] uppercase tracking-wide text-faint">Look</span>
-                        <div className="flex gap-1.5">
-                          {activePack.anchors.slice(0, 6).map((a) => (
+                        <div className="flex flex-wrap gap-1.5">
+                          {activePack.anchors.map((a) => (
                             <img
                               key={a.hash}
                               src={api.thumbUrl(a.hash)}

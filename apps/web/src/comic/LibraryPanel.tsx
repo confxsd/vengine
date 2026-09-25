@@ -396,12 +396,34 @@ function StyleRow({ style }: { style: StylePack }) {
         onCommit={(v) => void patchStylePack(style.id, { negative: v })}
       />
 
+      {/* The pack's look at a glance — the same images “Apply to comic” pins onto
+          the episode, so a pack that grows (seeded anchors) stays visible here. */}
+      {style.anchors.length > 0 && (
+        <div className="mt-2 flex flex-wrap gap-1.5">
+          {style.anchors.map((a, i) => (
+            <img
+              key={a.hash}
+              src={api.thumbUrl(a.hash)}
+              alt=""
+              title={`Anchor ${i + 1}/${style.anchors.length} — weight ${a.weight}`}
+              className="h-14 w-14 rounded-md border border-border object-cover"
+            />
+          ))}
+        </div>
+      )}
+
       <div className="mt-2">
         <Button
           variant="outline"
           size="sm"
           disabled={!hasProject}
-          title={hasProject ? "Apply this look to the current comic" : "Open a comic first"}
+          title={
+            hasProject
+              ? style.anchors.length
+                ? `Apply this look + its ${style.anchors.length} reference images to the current comic`
+                : "Apply this look to the current comic"
+              : "Open a comic first"
+          }
           onClick={apply}
         >
           <CheckCircle2 className="h-3.5 w-3.5" />
