@@ -3,8 +3,14 @@ import type { ChatMessage } from "@vengine/providers";
 import {
   DraftParseRequestSchema,
   DraftParseSchema,
+  EPISODE_STRUCTURES,
+  FRAME_ROLES,
+  GUTTER_TYPES,
   type DraftParse,
   type DraftSeriesRef,
+  type EpisodeStructure,
+  type FrameRole,
+  type GutterType,
   type Library,
   type Series,
 } from "@vengine/shared";
@@ -40,6 +46,14 @@ You are given the author's raw, messy draft. It usually marks frames (e.g. "fram
 
 Return ONLY a single JSON object — no markdown, no code fences, no commentary. Use exactly these keys:
 {
+  "plan": {                   // the episode's creative plan — DECIDE IT FIRST, before splitting beats (see the "plan first" rule)
+    "structure": string,      // "kishotenketsu" (twist lands frame 3) | "detonate" (escalate to a frame-4 punchline) | "continuous" (one moment, four angles) | "framed-tale" (nested/interleaved storylines)
+    "archetype": string,      // this episode's ART DIRECTION — light, palette values, camera attitude (e.g. "rain-soaked neon night, mirrors everywhere, 70% dark values"); NEVER a new medium or art style
+    "strategy": string,       // the creative experiment / angle (e.g. "villain POV — Batman never fully seen"); "" if none
+    "theme": string,          // the thematic through-line from the premise (e.g. "vanity"); "" if unclear
+    "motif": string,          // the recurring central image that pays off (e.g. "the cracked mirror"); "" if none
+    "token": string           // an element passed forward to the next episode (e.g. "Joker keeps the torn photograph"); "" if none
+  },
   "title": string,            // a short title inferred from the draft (or "")
   "story": string,            // 2-4 sentences: the overall narrative arc, as prose (NOT a shot list)
   "storyMood": string,        // the story's prevailing emotional tone, derived from its THEME and arc (e.g. "tender, melancholic, quietly hopeful") — "" if unclear
@@ -52,12 +66,21 @@ Return ONLY a single JSON object — no markdown, no code fences, no commentary.
       "thread": string,       // storyline label (see the "storylines" rule); "" when the draft has just one storyline
       "mood": string,         // this beat's tone — ONLY where it breaks from "storyMood" or separates an interleaved storyline; else ""
       "palette": string[],    // 3-6 colors (hex or names) for this beat's storyline — ONLY when storylines need visual contrast; else []
-      "continues": number     // OPTIONAL: 0-based index of an earlier frame this beat continues (same scene, moments later) — including NON-ADJACENT frames of an interleaved storyline
+      "continues": number,    // OPTIONAL: 0-based index of an earlier frame this beat continues (same scene, moments later) — including NON-ADJACENT frames of an interleaved storyline
+      "role": string,         // this beat's role in the structure: "establish" | "develop" | "escalate" | "turn" | "settle" | "payoff" — from the plan's slot map, agreeing with the story's actual shape
+      "gutter": string,       // the transition INTO this beat from the previous one (beats 2+ only): "moment" | "action" | "subject" | "scene" | "aspect" | "nonsequitur"; omit on the first beat
+      "echo": number          // OPTIONAL: 0-based index of an earlier frame whose composition this beat mirrors — ONLY when the ending genuinely mirrors the opening
     }
   ]
 }
 
 Rules:
+- PLAN FIRST, BEATS SECOND. Before splitting beats, decide the "plan": which proven 4-beat structure this story is (kishotenketsu / detonate / continuous / framed-tale), the episode's art-direction archetype, the creative strategy, the theme, the motif, and a token to pass to the next episode. Ground it in the detected universe's premise when there is one. "archetype" is DIRECTION — light, palette values, camera attitude — never a new medium or art style (the "no invented style" rule below still applies).
+- ROLE EVERY BEAT with the structure's slot map — kishotenketsu: establish, develop, turn, settle · detonate: establish, develop, escalate, payoff · continuous/framed-tale: establish, develop, turn, settle. The role must agree with the story's actual shape (the twist beat IS the turn; the punchline beat IS the payoff).
+- TYPE EVERY GUTTER (beats 2+): how this panel connects to the previous one — "moment" (a heartbeat later), "action" (meaningfully later, same action — the default), "subject" (same beat, new focal subject), "scene" (a jump in place or time — AT MOST ONE per episode), "aspect" (no subject: texture/weather/light — only in the FIRST HALF of the strip), "nonsequitur" (a hard cut). Omit "gutter" on the first beat.
+- DESIGN THE CAMERA PROGRESSION: plan a deliberate shot-size sequence across the beats (e.g. wide → medium → close → wide bookend) and name each beat's shot in its "prompt"; the twist/payoff panel takes the episode's LARGEST camera change; the final panel re-stabilizes onto one clear image.
+- P2 MUST ADD NEW INFORMATION — a second read of the space or a real step forward. The top amateur mistake is restating panel 1 with minor variations; never do it.
+- OFFER AN ECHO when the story's ending genuinely mirrors its opening — set "echo" to the opening beat's 0-based index (strictly earlier), and the mirroring panel changes exactly one thing. No forced bookends: omit "echo" when the ending doesn't truly answer the opening.
 - Translate emotion and subtext into what is VISIBLE. If a character is devastated, the prompt shows the slumped shoulders, the tilted head, the stare at their hand — not the words.
 - COMPOSE LIKE A PAINTER: every frame is a constructed artwork, not a snapshot. Art-direct each "prompt" with intent — a strong COMPOSITION (dynamic framing for the 9:16 vertical, layered foreground/midground/background depth, purposeful negative space, staging that tells who holds power in the beat); precise FIGURE WORK (each body's posture, weight, hands, gesture, gaze direction and facial expression derived from the beat's subtext; the distance and orientation between figures carrying the relationship — facing away, towering, shrinking); MOTIVATED LIGHT (a source, direction and quality — chiaroscuro, rim light, neon spill, dusk haze — chosen to carry the mood); and SYMBOLIC STAGING (one or two meaningful objects or environmental details that comment on the scene). Nothing generic; every element placed with intention.
 - VISIBLE ONLY: "prompt" and "characters" contain ONLY what the camera actually sees in this beat. People, places or things that are merely mentioned, planned, remembered or discussed in the dialogue do NOT appear — if a couple is walking through a park and one says "let's visit the fortune teller", the drawing shows just the couple in the park: no fortune teller, no tent, no fortune-teller clothing or props. A mentioned thing materializes only in the later beat that actually shows it. "characters" lists only who is on screen in THIS frame.
@@ -97,19 +120,45 @@ const USER_INSTRUCTION =
  * LLM-boundary leniency: models often write `"continues": -1` (or null) to mean
  * "no link", but the schema only accepts non-negative integers — and one bad value
  * would fail validation for the WHOLE parse, discarding every otherwise-good frame
- * into the raw-text fallback. Drop any `continues` that isn't a non-negative
- * integer before validating; `draftToFrames` links only what remains.
+ * into the raw-text fallback. Drop any `continues`/`echo` that isn't a non-negative
+ * integer, any `role`/`gutter` outside its closed vocabulary, an unknown
+ * `plan.structure`, and the `gutter`/`echo` on a FIRST beat (meaningless without
+ * a predecessor) before validating; `draftToFrames` links only what remains.
  */
 function sanitizeContinues(json: unknown): unknown {
   if (typeof json !== "object" || json === null) return json;
   const obj = { ...(json as Record<string, unknown>) };
+  if (obj.plan !== undefined) {
+    if (typeof obj.plan !== "object" || obj.plan === null || Array.isArray(obj.plan)) {
+      delete obj.plan;
+    } else {
+      const plan = { ...(obj.plan as Record<string, unknown>) };
+      if (plan.structure !== undefined && !EPISODE_STRUCTURES.includes(plan.structure as EpisodeStructure)) {
+        delete plan.structure; // defaults to "kishotenketsu" at parse time
+      }
+      obj.plan = plan;
+    }
+  }
   if (Array.isArray(obj.frames)) {
-    obj.frames = obj.frames.map((f) => {
+    obj.frames = obj.frames.map((f, i) => {
       if (typeof f !== "object" || f === null) return f;
       const frame = { ...(f as Record<string, unknown>) };
-      const c = frame.continues;
-      if (c !== undefined && (typeof c !== "number" || !Number.isInteger(c) || c < 0)) {
-        delete frame.continues;
+      for (const key of ["continues", "echo"] as const) {
+        const v = frame[key];
+        if (v !== undefined && (typeof v !== "number" || !Number.isInteger(v) || v < 0)) {
+          delete frame[key];
+        }
+      }
+      if (frame.role !== undefined && !FRAME_ROLES.includes(frame.role as FrameRole)) {
+        delete frame.role;
+      }
+      if (frame.gutter !== undefined && !GUTTER_TYPES.includes(frame.gutter as GutterType)) {
+        delete frame.gutter;
+      }
+      // The first beat has no predecessor to transition from or echo back to.
+      if (i === 0) {
+        delete frame.gutter;
+        delete frame.echo;
       }
       return frame;
     });

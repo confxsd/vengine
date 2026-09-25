@@ -11,7 +11,7 @@
  * universe is picked up from the series' keywords + cast aliases.
  */
 import { readFileSync } from "node:fs";
-import { stylePackToComicStyle, type ComicCharacter, type ComicFrame, type ComicProject, type DraftParse, type Library } from "@vengine/shared";
+import { gutterReconcile, structureRoleAt, stylePackToComicStyle, type ComicCharacter, type ComicFrame, type ComicProject, type DraftParse, type Library } from "@vengine/shared";
 import { getJson, login, postJson, putJson } from "./remote-client.js";
 
 function usage(): never {
@@ -30,17 +30,32 @@ function draftToFrames(parse: DraftParse, cast: ComicCharacter[]): ComicFrame[] 
       if (key && !byName.has(key)) byName.set(key, c.id);
     }
   }
-  return parse.frames.map((f) => {
+  const frames: ComicFrame[] = parse.frames.map((f, i) => {
     const ids = [...new Set(f.characters.map((n) => byName.get(n.trim().toLowerCase())).filter((v): v is string => !!v))];
+    const role = f.role ?? (parse.plan ? structureRoleAt(parse.plan.structure, i) : undefined);
     return {
       id: crypto.randomUUID().slice(0, 8),
       prompt: f.prompt,
       variants: [],
       refHashes: [],
       ...(f.script.trim() ? { script: f.script } : {}),
+      ...(f.mood.trim() ? { mood: f.mood } : {}),
+      ...(f.thread.trim() ? { thread: f.thread } : {}),
+      ...(f.palette.length ? { palette: f.palette } : {}),
       ...(ids.length ? { characterIds: ids } : {}),
+      ...(role ? { role } : {}),
+      ...(i > 0 && f.gutter ? { gutter: f.gutter } : {}),
     };
   });
+  // Links resolve after all ids exist (strictly-earlier, like the client); then
+  // gutters reconcile with the links (EPISODE_STUDIO §3.3).
+  parse.frames.forEach((f, i) => {
+    const target = f.continues !== undefined && f.continues < i ? frames[f.continues] : undefined;
+    if (target) frames[i] = { ...frames[i]!, continuesFrameId: target.id };
+    const echo = f.echo !== undefined && f.echo < i ? frames[f.echo] : undefined;
+    if (echo) frames[i] = { ...frames[i]!, echoFrameId: echo.id };
+  });
+  return gutterReconcile(frames);
 }
 
 async function main() {
@@ -101,6 +116,7 @@ async function main() {
   const episode: ComicProject = {
     ...created,
     ...(series ? { seriesId: series.id } : {}),
+    ...(parse.plan ? { plan: parse.plan } : {}),
     story: parse.story || created.story,
     settings: parse.settings || created.settings,
     cast,

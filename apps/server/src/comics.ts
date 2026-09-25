@@ -5,9 +5,11 @@ import {
   ComicProjectSchema,
   compileComic,
   compileEditFrame,
+  frameImageHash,
   genNodeId,
   exportNodeId,
   unionVariants,
+  type ComicFrame,
   type ComicProject,
   type NodeProgressEvent,
 } from "@vengine/shared";
@@ -51,6 +53,48 @@ const EditBody = z.object({
   seed: z.number().int().optional(),
   quality: z.enum(["preview", "final"]).optional(),
 });
+
+/**
+ * Partition the selected frames into dependency waves (spec EPISODE_STUDIO §7) so
+ * a continuation — or an echo — always compiles against its source's FINISHED
+ * image: references resolve at compile time, and frames in one run are DAG
+ * siblings, so an un ordered "generate all" would feed a continuation a missing
+ * or stale prior. A frame is ready when its `continuesFrameId`/`echoFrameId` is
+ * unset, points outside the selection, or at a frame that already has an image
+ * (now, or scheduled in an earlier wave — the simulation matches reality because
+ * every scheduled frame persists its image before the next wave compiles).
+ * Independent frames stay concurrent within a wave. Cycles (impossible via
+ * strictly-earlier validation, but defensive) and any other deadlock fall
+ * through to a final wave — unresolved links are dropped at compile exactly as
+ * today, so a run never breaks. Pure, so the partitioning is unit-testable.
+ */
+export function partitionWaves(
+  project: ComicProject,
+  frameIds: readonly string[],
+): ComicFrame[][] {
+  const selected = new Set(frameIds);
+  const hasImage = new Set(
+    project.frames.filter((f) => frameImageHash(f)).map((f) => f.id),
+  );
+  const scheduled = new Set<string>();
+  const waves: ComicFrame[][] = [];
+  let pending = project.frames.filter((f) => selected.has(f.id));
+  while (pending.length > 0) {
+    const pendingIds = new Set(pending.map((f) => f.id));
+    const ready = pending.filter((f) =>
+      [f.continuesFrameId, f.echoFrameId].every(
+        (dep) =>
+          !dep || dep === f.id || !pendingIds.has(dep) || hasImage.has(dep) || scheduled.has(dep),
+      ),
+    );
+    const wave = ready.length > 0 ? ready : pending; // deadlock → run the rest together
+    waves.push(wave);
+    for (const f of wave) scheduled.add(f.id);
+    const waveIds = new Set(wave.map((f) => f.id));
+    pending = pending.filter((f) => !waveIds.has(f.id));
+  }
+  return waves;
+}
 
 /**
  * Mount the Comic Studio routes onto the main Hono app. Runs execute through
@@ -146,6 +190,11 @@ export function registerComicRoutes(
   });
 
   // Compile → run → persist freshly generated images into each frame's variants.
+  // Runs execute in dependency WAVES (spec EPISODE_STUDIO §7): each wave is the
+  // regular runHost path on a freshly compiled graph, its outputs are persisted
+  // before the next wave compiles, so a continuation (or echo) always resolves
+  // its source's finished image. Unchanged frames are content-addressed cache
+  // hits, so the per-wave recompile costs nothing (run twice → second run free).
   app.post("/api/comics/:id/run", async (c) => {
     const id = c.req.param("id");
     const parsed = RunBody.safeParse(await c.req.json().catch(() => ({})));
@@ -157,8 +206,8 @@ export function registerComicRoutes(
       return c.json({ error: "not found" }, 404);
     }
 
-    const graph = compileComic(project, { exportDir: rt.projects.framesDir(id) });
-    const targets = parsed.data.frameIds?.map(exportNodeId);
+    const scope = parsed.data.frameIds ?? project.frames.map((f) => f.id);
+    const waves = partitionWaves(project, scope);
     // The seed actually compiled for each frame, recorded with its variant so a
     // re-selected variant is reproducible.
     const seedByFrame = new Map(project.frames.map((f) => [f.id, f.seed ?? project.style.seed]));
@@ -166,70 +215,109 @@ export function registerComicRoutes(
     const runId = randomUUID();
     broadcast({ runId, nodeId: "*", status: "running", at: new Date().toISOString() });
 
-    // The RunHost captures streamed preview hashes (its `produced` map), so a
-    // cancelled/failed run still persists the frames that did finish.
-    const result = await runHost.run(runId, {
-      graph,
-      quality: parsed.data.quality,
-      targets,
-      emit: broadcast,
-    });
-    const produced = result.produced;
+    // Accumulated across waves: produced image hashes and terminal node statuses.
+    const produced: Record<string, string> = {};
+    const nodeStatus = new Map<string, "done" | "cached">();
+    let status = "done";
+    let error: string | undefined;
 
-    // Prefer the authoritative run result; fall back to streamed hashes for any
-    // frame that finished after an early stop.
-    for (const f of project.frames) {
-      const fromResult = (result.nodes.get(genNodeId(f.id))?.outputs?.image as { hash?: string } | undefined)
-        ?.hash;
-      const hash = fromResult ?? produced[genNodeId(f.id)];
-      if (hash) produced[genNodeId(f.id)] = hash;
-    }
+    for (const wave of waves) {
+      // Compile against the LATEST persisted document so this wave's references
+      // resolve the images the previous wave just wrote (fall back to the snapshot
+      // we already hold if the project vanished mid-run).
+      let latest = project;
+      try {
+        latest = await rt.projects.get(id);
+      } catch {
+        /* project vanished mid-run — keep compiling the snapshot we hold */
+      }
+      const graph = compileComic(latest, { exportDir: rt.projects.framesDir(id) });
+      const targets = wave.map((f) => exportNodeId(f.id));
 
-    // Apply the delta to the *latest* document under the store lock, so edits made
-    // during a long run are preserved (only variants/resultHash change).
-    let saved = project;
-    try {
-      saved = await rt.projects.update(id, (latest) => ({
-        ...latest,
-        frames: latest.frames.map((f) => {
-          const hash = produced[genNodeId(f.id)];
-          if (!hash) return f;
-          const seed = seedByFrame.get(f.id) ?? latest.style.seed;
-          return {
-            ...f,
-            resultHash: hash,
-            variants: unionVariants(f.variants, [{ hash, seed }]),
-          };
-        }),
-      }));
-    } catch {
-      /* project vanished mid-run — nothing to persist */
+      // The RunHost captures streamed preview hashes (its `produced` map), so a
+      // cancelled/failed wave still persists the frames that did finish.
+      const result = await runHost.run(runId, {
+        graph,
+        quality: parsed.data.quality,
+        targets,
+        emit: broadcast,
+      });
+
+      // Prefer the authoritative run result; fall back to streamed hashes for any
+      // frame that finished after an early stop.
+      const waveProduced = new Map<string, string>();
+      for (const f of wave) {
+        const gid = genNodeId(f.id);
+        const fromResult =
+          (result.nodes.get(gid)?.outputs?.image as { hash?: string } | undefined)?.hash;
+        const hash = fromResult ?? result.produced[gid];
+        if (hash) {
+          produced[gid] = hash;
+          waveProduced.set(f.id, hash);
+        }
+        const st = result.nodes.get(gid)?.status;
+        if (st === "done") nodeStatus.set(gid, "done");
+        else if (st === "cached") nodeStatus.set(gid, "cached");
+      }
+
+      // Apply this wave's delta to the *latest* document under the store lock, so
+      // edits made during a long run are preserved (only variants/resultHash change)
+      // and the NEXT wave's compile sees the fresh images.
+      try {
+        await rt.projects.update(id, (cur) => ({
+          ...cur,
+          frames: cur.frames.map((f) => {
+            const hash = waveProduced.get(f.id);
+            if (!hash) return f;
+            const seed = seedByFrame.get(f.id) ?? cur.style.seed;
+            return {
+              ...f,
+              resultHash: hash,
+              variants: unionVariants(f.variants, [{ hash, seed }]),
+            };
+          }),
+        }));
+      } catch {
+        /* project vanished mid-run — nothing to persist */
+      }
+
+      if (result.status !== "done") {
+        status = result.status;
+        error = result.error;
+        break;
+      }
     }
 
     broadcast({
       runId,
       nodeId: "*",
-      status: result.status === "done" ? "done" : "error",
-      error: result.error,
+      status: status === "done" ? "done" : "error",
+      error,
       at: new Date().toISOString(),
     });
 
     // Distinguish freshly generated frames from cache hits, so the client can tell the
     // user when a run was a no-op (identical inputs → same image) and point them to
     // reroll the seed for a new take instead of looking like nothing happened.
-    const scope = parsed.data.frameIds ?? project.frames.map((f) => f.id);
     let generated = 0;
     let cached = 0;
     for (const fid of scope) {
-      const st = result.nodes.get(genNodeId(fid))?.status;
+      const st = nodeStatus.get(genNodeId(fid));
       if (st === "done") generated += 1;
       else if (st === "cached") cached += 1;
     }
 
+    let saved = project;
+    try {
+      saved = await rt.projects.get(id);
+    } catch {
+      /* project vanished — report the snapshot we hold */
+    }
+
     return c.json({
-      runId: result.runId,
-      status: result.status,
-      error: result.error,
+      runId,
+      status,
+      error,
       generated,
       cached,
       frames: saved.frames.map((f) => ({ id: f.id, resultHash: f.resultHash, variants: f.variants })),

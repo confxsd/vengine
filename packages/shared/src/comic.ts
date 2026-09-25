@@ -1,6 +1,20 @@
 import { z } from "zod";
 import { GraphDocumentSchema, type GraphDocument } from "./graph.js";
 import { DirectorMessageSchema } from "./director.js";
+import {
+  EpisodePlanSchema,
+  FRAME_ROLES,
+  GUTTER_TYPES,
+  type EpisodePlan,
+  type FrameRole,
+  type GutterType,
+} from "./episode.js";
+
+// The episode-planning vocabulary (structures/roles/gutters + the plan schema)
+// lives in the leaf module `episode.ts` and is re-exported here so the comic
+// layer stays its public home — while `director.ts` can build on the same data
+// without a comic ⇄ director import cycle (this file imports director's schema).
+export * from "./episode.js";
 
 /**
  * A comic project is the user-facing document for the Comic Studio: a main story
@@ -38,6 +52,27 @@ export const DEFAULT_HEIGHT = 1344;
 /** Cap on retained variants per frame — enough to compare iterations, bounded so
  *  a long exploration session doesn't grow the project document unboundedly. */
 export const MAX_VARIANTS = 16;
+
+// ---------------------------------------------------------------------------
+// Episode planning — the episode as a *directed* strip (see docs/EPISODE_STUDIO.md).
+// The vocabulary/schema live in episode.ts (re-exported above); the machinery
+// that USES them — role flavors, transition/echo directives, reconciliation,
+// rhythm review — stays here with the rest of prompt composition.
+// ---------------------------------------------------------------------------
+
+/** Reader-effort score per gutter (McCloud/Cohn): smaller = easier to bridge.
+ *  A 4-strip summing over 12 is flagged by `rhythmWarnings` as hard reading. */
+export const GUTTER_EFFORT: Record<GutterType, number> = {
+  moment: 1,
+  action: 2,
+  subject: 3,
+  aspect: 4,
+  scene: 5,
+  nonsequitur: 6,
+};
+
+/** The advisory ceiling on a strip's total gutter effort (see `GUTTER_EFFORT`). */
+export const GUTTER_EFFORT_MAX = 12;
 
 /** One generated iteration of a frame: the image hash plus the seed that made it
  *  (so re-selecting a variant is reproducible). */
@@ -197,6 +232,35 @@ export const ComicFrameSchema = z.object({
    * Optional: existing frames need no migration.
    */
   palette: z.array(z.string()).optional(),
+  /**
+   * This panel's role in the episode structure (`establish | develop | escalate |
+   * turn | settle | payoff`) — defaults from the plan's slot map at draft-apply
+   * time. Parameterizes the craft directive (see `craftDirective`): the turn
+   * takes the episode's biggest camera change, the settle re-stabilizes, the
+   * payoff detonates. Roles are labels with teeth — composition, not metadata.
+   * Optional: existing frames need no migration (no role → house craft only).
+   */
+  role: z.enum(FRAME_ROLES).optional(),
+  /**
+   * The typed gutter between the previous panel and this one (McCloud's six:
+   * `moment | action | subject | scene | aspect | nonsequitur`), set on frame
+   * i ≥ 1 only — it describes the transition INTO this panel and composes into
+   * the prompt as a `Transition:` directive (see `transitionDirective`). The
+   * reconciliation rule (`gutterReconcile`) keeps it from ever contradicting
+   * `continuesFrameId`: moment/action/subject auto-link to the predecessor,
+   * scene/aspect/nonsequitur clear an adjacent link. Optional: no migration.
+   */
+  gutter: z.enum(GUTTER_TYPES).optional(),
+  /**
+   * Strictly-earlier frame whose composition this panel mirrors — the bookend
+   * payout (P4 mirrors P1 with exactly one thing different). The echo source's
+   * current image is fed as the LEADING reference and the echo directive
+   * governs composition (it overrides the plain reference directive and wins
+   * over a continuity link; `rhythmWarnings` flags the both-set case). Validated
+   * like `continuesFrameId`: self-links and unknown ids are ignored, so edits
+   * never break a run. Optional: existing frames need no migration.
+   */
+  echoFrameId: z.string().optional(),
   /** The currently selected/displayed image (a hash from `variants`). The artist
    *  picks it; a run sets it to the freshest generation. */
   resultHash: z.string().length(64).optional(),
@@ -409,6 +473,14 @@ export const ComicProjectSchema = z.object({
   storyMood: z.string().optional(),
   /** Shared world/setting details. */
   settings: z.string().default(""),
+  /**
+   * The episode's creative plan (see `EpisodePlanSchema`): structure, art
+   * direction, strategy, theme, motif, token. When present, its archetype /
+   * theme / motif compose into EVERY frame's prompt as an art-direction block —
+   * the lever that makes episodes feel authored around one idea instead of four
+   * isolated images. Optional: pre-plan projects parse and compose unchanged.
+   */
+  plan: EpisodePlanSchema.optional(),
   /** Library series this project is an episode of (a shared visual universe). */
   seriesId: z.string().optional(),
   /** Recurring characters reused across frames for identity consistency. */
@@ -456,16 +528,35 @@ export function paletteDirective(palette: string[] | undefined): string {
   return `Color palette: render using only this limited palette — ${colors.join(", ")}.`;
 }
 
+/** Coarse shot-size classes, ordered far → near. The ordered index is the
+ *  distance axis `rhythmWarnings` measures camera jumps on. */
+export const SHOT_SIZES = ["xws", "wide", "full", "medium", "close", "xcu"] as const;
+export type ShotSize = (typeof SHOT_SIZES)[number];
+
+/** Human labels for the shot sizes (the rhythm rail + warning texts). */
+export const SHOT_SIZE_LABELS: Record<ShotSize, string> = {
+  xws: "extreme wide",
+  wide: "wide",
+  full: "full",
+  medium: "medium",
+  close: "close-up",
+  xcu: "extreme close-up",
+};
+
 /** A ready-to-use camera preset: the human `label` shown in the dropdown and the
  *  prompt-ready `value` fed into `frame.camera`. Grouped angle → distance, coarse to
- *  fine, matching how a shot is usually called. Free text is still allowed, so the
- *  list stays short and common rather than exhaustive. */
+ *  fine, matching how a shot is usually called. Distance presets carry a coarse
+ *  `size` class (the rhythm axis); angle presets don't — they say nothing about
+ *  distance, exactly like free text. Free text is still allowed, so the list stays
+ *  short and common rather than exhaustive. */
 export interface CameraPreset {
   label: string;
   value: string;
+  /** Coarse shot-size class, when the preset names a distance. */
+  size?: ShotSize;
 }
 export const CAMERA_PRESETS: CameraPreset[] = [
-  // Angle
+  // Angle (no size — these frame attitude, not distance)
   { label: "Eye-level", value: "eye-level shot" },
   { label: "Low angle (looking up)", value: "low-angle shot looking up" },
   { label: "High angle (looking down)", value: "high-angle shot looking down" },
@@ -475,13 +566,24 @@ export const CAMERA_PRESETS: CameraPreset[] = [
   { label: "Over-the-shoulder", value: "over-the-shoulder shot" },
   { label: "Point-of-view (POV)", value: "first-person point-of-view shot" },
   // Distance / shot size
-  { label: "Establishing (extreme wide)", value: "extreme wide establishing shot" },
-  { label: "Wide shot", value: "wide shot" },
-  { label: "Full shot (full body)", value: "full shot, full body in frame" },
-  { label: "Medium shot (waist up)", value: "medium shot, waist up" },
-  { label: "Close-up", value: "close-up" },
-  { label: "Extreme close-up", value: "extreme close-up" },
+  { label: "Establishing (extreme wide)", value: "extreme wide establishing shot", size: "xws" },
+  { label: "Wide shot", value: "wide shot", size: "wide" },
+  { label: "Full shot (full body)", value: "full shot, full body in frame", size: "full" },
+  { label: "Medium shot (waist up)", value: "medium shot, waist up", size: "medium" },
+  { label: "Close-up", value: "close-up", size: "close" },
+  { label: "Extreme close-up", value: "extreme close-up", size: "xcu" },
 ];
+
+/**
+ * The frame's coarse shot-size class: the `size` of the camera preset its
+ * `camera` phrase matches, or undefined for free text and angle-only presets —
+ * those "simply don't participate" in rhythm checks (spec §3.4).
+ */
+export function cameraSizeOf(frame: ComicFrame): ShotSize | undefined {
+  const c = frame.camera?.trim();
+  if (!c) return undefined;
+  return CAMERA_PRESETS.find((p) => p.value === c)?.size;
+}
 
 /**
  * The house craft directive appended to EVERY frame's composed prompt — the
@@ -494,6 +596,81 @@ export const CAMERA_PRESETS: CameraPreset[] = [
  */
 export const CRAFT_DIRECTIVE =
   "Craft: compose this frame like a masterwork — deliberate cinematic staging (dynamic framing, layered depth, intentional negative space), figures whose posture, gesture, hands, gaze and facial expression carry the beat's meaning, motivated lighting, and symbolic objects or environmental detail placed with intention.";
+
+/**
+ * The per-role flavor appended to the house craft directive when a frame's
+ * `role` is set (spec §5.1) — data, not code paths. Each flavor is one sentence
+ * of structural direction: what THIS panel's job is in the strip (the turn
+ * takes the biggest camera change; the settle re-stabilizes; the payoff
+ * detonates). Hand-written prompts without a role keep the house baseline.
+ */
+export const ROLE_FLAVORS: Record<FrameRole, string> = {
+  establish:
+    "This is the establishing panel: read the world — geography and emotional temperature; let the frame breathe; hold the subject back or show it small.",
+  develop:
+    "This panel must add NEW information — a second read of the space or a real step forward; never restate the previous panel.",
+  escalate:
+    "Raise the pressure: tighter framing, more kinetic staging, more of the frame filled; the reader should feel the incline.",
+  turn:
+    "This is the fulcrum: take the episode's biggest camera change and make the status-quo shift visible at a glance.",
+  settle:
+    "This is the landing: return to a stable, simple composition; one clear image the reader leaves with.",
+  payoff:
+    "This is the detonation: the panel that retroactively makes the previous panels cohere — dominant, high-contrast, readable at a glance.",
+};
+
+/**
+ * The craft directive for one frame: the house `CRAFT_DIRECTIVE` sentence,
+ * extended by the role's flavor sentence when `role` is set. No role → the
+ * house baseline verbatim, so pre-role frames compose byte-identically.
+ */
+export function craftDirective(role?: FrameRole): string {
+  const flavor = role ? ROLE_FLAVORS[role] : undefined;
+  return flavor ? `${CRAFT_DIRECTIVE} ${flavor}` : CRAFT_DIRECTIVE;
+}
+
+/**
+ * The per-gutter transition directive emitted on the ENTERING frame (i ≥ 1),
+ * telling the model what kind of bridge the reader must cross from the previous
+ * panel (spec §5.2, McCloud's six). Data, not code paths — machinery rather
+ * than taxonomy: `action` demands a new camera distance, `scene` forbids a
+ * visual bridge, `aspect` strips the subject. Undefined gutter → "".
+ */
+export const TRANSITION_DIRECTIVES: Record<GutterType, string> = {
+  moment:
+    "Transition from the previous panel: a heartbeat later — same subject and framing logic, one instant of change.",
+  action:
+    "Transition: meaningfully later in the same action — same scene and participants, advanced in time; take a NEW camera distance or angle.",
+  subject:
+    "Transition: within the same scene and beat, the camera cuts to who or what matters now.",
+  scene:
+    "Transition: a new scene — deliberate jump in place or time; establish the new space cleanly, with no visual bridge to the previous palette.",
+  aspect:
+    "Transition: an aspect of the same place and mood — no subject, no action; texture, weather, light, objects at rest.",
+  nonsequitur:
+    "Transition: a hard cut with no literal continuity — the juxtaposition itself is the meaning; commit fully to the new image.",
+};
+
+/** The transition directive for a frame's gutter ("" when unset). */
+export function transitionDirective(gutter: GutterType | undefined): string {
+  return gutter ? TRANSITION_DIRECTIVES[gutter] : "";
+}
+
+/**
+ * The directive for an echo frame: the echo source's image leads the fed
+ * reference order (see `echoReferences`), so "the FIRST attached image" is the
+ * episode's opening composition to mirror. Mirrors `continuityDirective`'s
+ * identity handling: when the frame also carries character/style sheets, the
+ * directive names them as the identity source so likeness never bleeds from
+ * the mirrored composition.
+ */
+export function echoDirective(hasIdentityRefs = false): string {
+  const base =
+    "Echo: the FIRST attached image is this episode's opening composition — mirror its framing, camera and figure placement, changing exactly what the description above specifies; the mirrored composition IS the payoff.";
+  return hasIdentityRefs
+    ? `${base} Remaining attached images are the character and style reference sheets: take each character's identity from their own sheet, never from how they appear in the mirrored image.`
+    : base;
+}
 
 /** The per-frame camera/shot directive appended to a frame's prompt. Trailing period
  *  is normalised so a preset and a hand-typed phrase read identically. Empty → "". */
@@ -512,9 +689,33 @@ export function moodDirective(mood: string | undefined): string {
 }
 
 /**
+ * The episode's art-direction block (spec §5 step 2): one paragraph of up to
+ * three lines — archetype, theme, motif — each dropped when its value is empty
+ * (the same no-dangling-label discipline as the template). `[]` when the
+ * project carries no plan or nothing worth saying; a pre-plan project composes
+ * byte-identically to the previous release (golden test).
+ */
+export function artDirectionLines(plan: EpisodePlan | undefined): string[] {
+  if (!plan) return [];
+  const lines: string[] = [];
+  const archetype = plan.archetype.trim().replace(/\.+$/, "");
+  if (archetype) lines.push(`Art direction: ${archetype}.`);
+  const theme = plan.theme.trim().replace(/\.+$/, "");
+  if (theme) lines.push(`Theme: ${theme}.`);
+  const motif = plan.motif.trim();
+  if (motif) lines.push(`Motif: weave "${motif}" into this frame only where it earns its place.`);
+  return lines;
+}
+
+/**
  * Substitute the template tokens for one frame. This is the "engineered context":
  * deterministic, previewable, and identical to what the compiler bakes into the
  * generation node, so the UI preview never diverges from what actually runs.
+ *
+ * v2 block order (spec §5): template → art direction (plan) → craft (role-flavored)
+ * → camera → mood → palette → transition (gutter) → exactly one composition-governing
+ * directive (echo > continuity > plain reference). Every block is drop-empty, so a
+ * project with no plan/role/gutter/echo composes byte-identically to v1.
  */
 export function composeFramePrompt(project: ComicProject, frame: ComicFrame): string {
   const tokens: Record<string, string> = {
@@ -536,9 +737,15 @@ export function composeFramePrompt(project: ComicProject, frame: ComicFrame): st
     .filter((l) => !/^\s*\p{L}[\p{L} ]*:\s*$/u.test(l));
   const baseText = kept.join("\n").replace(/\n{3,}/g, "\n\n").trim();
 
-  // Lead the trailing directives with the house craft standard: every frame is
-  // art-directed like a masterwork, whatever wrote the scene text above.
-  const withCraft = baseText ? `${baseText}\n\n${CRAFT_DIRECTIVE}` : CRAFT_DIRECTIVE;
+  // The plan's art direction rides right under the scene text: one episode, one
+  // vision, stated to every frame (empty plan/values → nothing, old projects unchanged).
+  const art = artDirectionLines(project.plan).join("\n");
+  const withArt = art ? (baseText ? `${baseText}\n\n${art}` : art) : baseText;
+
+  // Lead the trailing directives with the house craft standard — now role-flavored:
+  // every frame is art-directed like a masterwork, and a framed beat knows its job.
+  const craft = craftDirective(frame.role);
+  const withCraft = withArt ? `${withArt}\n\n${craft}` : craft;
 
   // Append this frame's camera/shot framing (if set) right after the scene, so the
   // composition directive sits with the subject it frames. Empty → unchanged prompt.
@@ -558,18 +765,31 @@ export function composeFramePrompt(project: ComicProject, frame: ComicFrame): st
   // the lock; absent inherits `style.palette` (same override shape as mood/storyMood).
   // Empty palette → unchanged prompt.
   const palette = paletteDirective(frame.palette ?? project.style.palette);
-  const base = palette ? (withMood ? `${withMood}\n\n${palette}` : palette) : withMood;
+  const withPalette = palette ? (withMood ? `${withMood}\n\n${palette}` : palette) : withMood;
+
+  // The typed gutter into this panel (frames i ≥ 1 only): sits BEFORE the reference
+  // directives so the gutter's intent frames how the references are used. The first
+  // frame has no predecessor, so a stale gutter there emits nothing (defensive).
+  const i = project.frames.findIndex((f) => f.id === frame.id);
+  const transition = i > 0 ? transitionDirective(frame.gutter) : "";
+  const base = transition ? (withPalette ? `${withPalette}\n\n${transition}` : transition) : withPalette;
 
   // Append exactly one "how to use the reference images" directive, so an edit-capable
   // model knows whether a supplied image is a scene to continue, a layout to copy, or
   // just an identity/style cue — otherwise it silently reproduces whatever it's given.
   // Gated on the same reference sets the compiler feeds, so preview/compile/run match.
-  //   • A resolved continuity link governs composition → continuity directive (which,
-  //     when cast/style sheets are also present, folds in identity guidance for them).
+  //   • A resolved ECHO governs composition → echo directive (the mirrored opening
+  //     leads the fed references; the bookend payout). Echo wins over continuity —
+  //     a frame has at most one composition governor, and `rhythmWarnings` flags
+  //     the both-set case.
+  //   • Else a resolved continuity link governs composition → continuity directive
+  //     (which, when cast/style sheets are also present, folds in identity guidance).
   //   • Otherwise, any identity/style references → reference directive (compose/match).
-  // Continuity wins on composition so a frame never carries two conflicting layout rules.
   let directive: string | undefined;
-  if (continuityReferences(project, frame).length > 0) {
+  if (echoReferences(project, frame).length > 0) {
+    const hasIdentityRefs = identityReferences(project, frame).length > 0;
+    directive = echoDirective(hasIdentityRefs);
+  } else if (continuityReferences(project, frame).length > 0) {
     // A continuation frame still carries its cast/style sheets as references; tell the
     // model they're the identity source so character likeness comes from the clean
     // sheet, not from how the character was posed in the previous panel.
@@ -619,6 +839,23 @@ export function continuityReferences(
   const { continuesFrameId } = frame;
   if (!continuesFrameId || continuesFrameId === frame.id) return [];
   const source = project.frames.find((f) => f.id === continuesFrameId);
+  const hash = source && frameImageHash(source);
+  return hash ? [{ hash, weight: DEFAULT_CONTINUITY_WEIGHT }] : [];
+}
+
+/**
+ * The current image of the frame this one echoes (the bookend payout), as a
+ * single full-weight reference — empty when there's no link, it's a self-link,
+ * the source was removed, or the source has no image yet. Resolved exactly like
+ * `continuityReferences` so the compiler, UI preview and wave runner all agree.
+ */
+export function echoReferences(
+  project: ComicProject,
+  frame: ComicFrame,
+): ComicReference[] {
+  const { echoFrameId } = frame;
+  if (!echoFrameId || echoFrameId === frame.id) return [];
+  const source = project.frames.find((f) => f.id === echoFrameId);
   const hash = source && frameImageHash(source);
   return hash ? [{ hash, weight: DEFAULT_CONTINUITY_WEIGHT }] : [];
 }
@@ -805,18 +1042,22 @@ export function identityReferences(project: ComicProject, frame: ComicFrame): Co
 }
 
 /**
- * The full ordered, weighted reference set for one frame: the scene-continuity
- * reference first (this frame continues another's scene, so it leads at full weight),
- * then the frame's identity/style references (own refs → active cast → style). Order
- * matters — models weight earlier references more, and adapters that cap input images
- * truncate the tail — so continuity leads, the frame's own refs follow, then characters,
- * then style (the most expendable, also carried by LoRAs). Deduped by hash (first wins, so an
- * image used in two roles keeps its strongest/earliest weight and is sent once).
- * Shared by the compiler and the UI preview so what runs is exactly what the artist sees.
+ * The full ordered, weighted reference set for one frame: the echo reference
+ * first (a resolved bookend governs composition, so the mirrored opening leads
+ * at full weight — it would otherwise fight the continuity frame for the lead),
+ * then the scene-continuity reference, then the frame's identity/style
+ * references (own refs → active cast → style). Order matters — models weight
+ * earlier references more, and adapters that cap input images truncate the
+ * tail — so echo leads, continuity follows, then the frame's own refs, then
+ * characters, then style (the most expendable, also carried by LoRAs). Deduped
+ * by hash (first wins, so an image used in two roles keeps its
+ * strongest/earliest weight and is sent once). Shared by the compiler and the
+ * UI preview so what runs is exactly what the artist sees.
  */
 export function frameReferences(project: ComicProject, frame: ComicFrame): ComicReference[] {
   const byHash = new Map<string, ComicReference>();
   for (const ref of [
+    ...echoReferences(project, frame),
     ...continuityReferences(project, frame),
     ...identityReferences(project, frame),
   ]) {
@@ -851,6 +1092,116 @@ export function frameLoras(project: ComicProject, frame: ComicFrame): ComicLora[
     if (lora.path.trim() && !byPath.has(lora.path)) byPath.set(lora.path, lora);
   }
   return [...byPath.values()];
+}
+
+// ---------------------------------------------------------------------------
+// Structure reconciliation & review notes (advisory — never blocking)
+// ---------------------------------------------------------------------------
+
+/** Gutters that continue the previous scene (auto-link to the predecessor). */
+const LINKING_GUTTERS: ReadonlySet<GutterType> = new Set(["moment", "action", "subject"]);
+
+/**
+ * Reconcile typed gutters with continuity links so the two can never contradict
+ * each other (spec §3.3, "the important one"). Applied to freshly mapped frames
+ * (draft apply / ingest); pure, so it's testable and reusable:
+ *   • `moment|action|subject` with no `continuesFrameId` auto-links to frame
+ *     i−1 — the table says these gutters keep the previous scene as reference.
+ *     An EXISTING link is authoritative and kept, including a non-adjacent one
+ *     (the framed-tale return: P4 `action`-continuing P1).
+ *   • `scene|aspect|nonsequitur` clear an ADJACENT link (exactly what an
+ *     auto-link would be — these gutters mean "no continuity reference"), but
+ *     never a non-adjacent explicit one.
+ * The first frame has no predecessor, so it is passed through untouched. Returns
+ * a new array; frames are copied only when changed.
+ */
+export function gutterReconcile(frames: readonly ComicFrame[]): ComicFrame[] {
+  return frames.map((f, i) => {
+    if (i === 0 || !f.gutter) return f;
+    const prev = frames[i - 1]!;
+    if (LINKING_GUTTERS.has(f.gutter)) {
+      // A self-link is junk (compile drops it anyway), not an authoritative link —
+      // so it shapes like "no link" and auto-links to the predecessor.
+      return f.continuesFrameId && f.continuesFrameId !== f.id
+        ? f
+        : { ...f, continuesFrameId: prev.id };
+    }
+    // scene/aspect/nonsequitur: drop an adjacent (auto-shaped) link; a
+    // non-adjacent explicit link survives (it names another scene to return to).
+    return f.continuesFrameId === prev.id || f.continuesFrameId === f.id
+      ? { ...f, continuesFrameId: undefined }
+      : f;
+  });
+}
+
+/**
+ * Advisory review notes for the episode's rhythm (spec §3.3–§3.5) — surfaced in
+ * the DraftModal and the Studio rhythm rail; they advise, the author decides.
+ * Accepts any `{ frames }` project-shape so a not-yet-applied draft can be
+ * checked too. Free-text cameras simply don't participate.
+ *   • adjacent identical preset shot sizes (a `moment` gutter legitimately
+ *     holds the same framing — one instant of change),
+ *   • P3 not taking the episode's biggest size-jump (the turn is the fulcrum),
+ *   • gutter budget: more than one `scene`, `aspect` past the first half,
+ *     total reader effort over `GUTTER_EFFORT_MAX`,
+ *   • a frame setting BOTH an echo and a continuity link (echo governs; the
+ *     contradiction deserves eyes).
+ */
+export function rhythmWarnings(project: Pick<ComicProject, "frames">): string[] {
+  const { frames } = project;
+  const notes: string[] = [];
+
+  const sizes = frames.map((f) => cameraSizeOf(f));
+  for (let i = 1; i < frames.length; i++) {
+    const a = sizes[i - 1]!;
+    const b = sizes[i]!;
+    if (a && b && a === b && frames[i]!.gutter !== "moment") {
+      notes.push(
+        `Frames ${i} & ${i + 1} repeat the same ${SHOT_SIZE_LABELS[b]!} shot — change the distance or angle, or mark the gutter "moment".`,
+      );
+    }
+  }
+
+  // Advisory: of the adjacent pairs where both cameras carry a size, the jump
+  // INTO P3 should be the largest in the episode (the craft-codex fulcrum rule).
+  const jumps = frames
+    .map((_, i) => {
+      if (i === 0) return undefined;
+      const a = sizes[i - 1]!;
+      const b = sizes[i]!;
+      return a && b
+        ? { into: i, gap: Math.abs(SHOT_SIZES.indexOf(a) - SHOT_SIZES.indexOf(b)) }
+        : undefined;
+    })
+    .filter((j): j is { into: number; gap: number } => !!j);
+  const intoP3 = jumps.find((j) => j.into === 2);
+  if (intoP3 && jumps.some((j) => j.gap > intoP3.gap)) {
+    notes.push(
+      "Frame 3 isn't the episode's biggest camera change — the turn panel should take the largest jump in shot size.",
+    );
+  }
+
+  const sceneCount = frames.filter((f) => f.gutter === "scene").length;
+  if (sceneCount > 1) {
+    notes.push(`${sceneCount} scene jumps — at most one per strip keeps the reader oriented.`);
+  }
+  frames.forEach((f, i) => {
+    if (f.gutter === "aspect" && i >= 2) {
+      notes.push(`Frame ${i + 1} is an aspect panel — aspects read best in the first half of the strip.`);
+    }
+    if (f.echoFrameId && f.continuesFrameId) {
+      notes.push(
+        `Frame ${i + 1} sets both an echo and a continuity link — the echo governs composition; clear one of the two.`,
+      );
+    }
+  });
+  const effort = frames.reduce((sum, f) => sum + (f.gutter ? GUTTER_EFFORT[f.gutter] : 0), 0);
+  if (effort > GUTTER_EFFORT_MAX) {
+    notes.push(
+      `High reader effort (gutters score ${effort} of ${GUTTER_EFFORT_MAX}) — lean on action transitions; save the hard cuts for the payoff.`,
+    );
+  }
+  return notes;
 }
 
 export interface CompileComicOptions {

@@ -25,6 +25,8 @@ import {
   frameReferences,
   styleReferences,
   CAMERA_PRESETS,
+  FRAME_ROLES,
+  GUTTER_TYPES,
   type ComicFrame,
 } from "@vengine/shared";
 import { useComic } from "../comicStore";
@@ -505,6 +507,46 @@ export function FrameCard({ frame, index, total }: Props) {
         />
       </div>
 
+      {/* Episode structure — this panel's role (flavors the craft directive) and,
+          from the second frame on, the typed gutter in from the previous panel
+          (composes a Transition directive and reconciles the continuity link). */}
+      <div className="flex items-center gap-1.5">
+        <span className="shrink-0 text-[10px] text-faint">role</span>
+        <Select
+          aria-label="Frame role"
+          className="h-7 flex-1 text-[11px]"
+          value={frame.role ?? ""}
+          onChange={(e) => patchFrame(frame.id, { role: (e.target.value || undefined) as ComicFrame["role"] })}
+          title="This panel's job in the episode structure — extends the craft directive (the turn takes the biggest camera change)"
+        >
+          <option value="">no role…</option>
+          {FRAME_ROLES.map((r) => (
+            <option key={r} value={r}>
+              {r}
+            </option>
+          ))}
+        </Select>
+        {index > 0 && (
+          <>
+            <span className="shrink-0 text-[10px] text-faint">gutter</span>
+            <Select
+              aria-label="Gutter into this frame"
+              className="h-7 flex-1 text-[11px]"
+              value={frame.gutter ?? ""}
+              onChange={(e) => patchFrame(frame.id, { gutter: (e.target.value || undefined) as ComicFrame["gutter"] })}
+              title="The transition into this panel (McCloud's six) — moment/action/subject keep the previous scene as reference; scene/aspect/nonsequitur break from it"
+            >
+              <option value="">no gutter…</option>
+              {GUTTER_TYPES.map((g) => (
+                <option key={g} value={g}>
+                  {g}
+                </option>
+              ))}
+            </Select>
+          </>
+        )}
+      </div>
+
       {/* The beat's script (dialogue / narration), kept from a draft import. Metadata
           only — never rendered into the image — so it lives in a collapsed disclosure. */}
       {frame.script !== undefined && (
@@ -705,6 +747,32 @@ export function FrameCard({ frame, index, total }: Props) {
               <option value="shot">↪ same shot (edit in place)</option>
             </Select>
           )}
+        </div>
+      )}
+
+      {/* Echo — mirror a strictly-earlier frame's composition (the bookend
+          payout: P4 mirrors P1, changing exactly one thing). The echo source's
+          image leads the references and governs composition, so it replaces the
+          reference directive rather than stacking on it. */}
+      {index > 0 && (
+        <div className="flex items-center gap-1.5">
+          <span className="shrink-0 text-[10px] text-faint">echo</span>
+          <Select
+            aria-label="Echo source frame"
+            className="h-7 flex-1 text-[11px]"
+            value={frame.echoFrameId ?? ""}
+            onChange={(e) => patchFrame(frame.id, { echoFrameId: e.target.value || undefined })}
+            title="Mirror an earlier frame's composition — its image leads the references and the prompt asks for the mirrored framing with exactly the described change"
+          >
+            <option value="">no echo</option>
+            {(project?.frames ?? []).map((f, j) =>
+              j < index ? (
+                <option key={f.id} value={f.id}>
+                  ⧉ mirrors Frame {j + 1}
+                </option>
+              ) : null,
+            )}
+          </Select>
         </div>
       )}
 

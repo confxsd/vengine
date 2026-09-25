@@ -1,0 +1,18 @@
+erDiagram
+  ComicProject ||--o| EpisodePlan : plan
+  ComicProject ||--o{ ComicFrame : frames
+  ComicFrame |o--o| ComicFrame : continuesFrameId
+  ComicFrame |o--o| ComicFrame : echoFrameId
+  EpisodePlan {
+    string structure
+    string archetype
+    string strategy
+    string theme
+    string motif
+    string token
+  }
+  ComicFrame {
+    string role
+    string gutter
+    string echoFrameId
+  }

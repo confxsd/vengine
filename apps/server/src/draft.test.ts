@@ -58,4 +58,52 @@ describe("parseDraftReply", () => {
     // A valid non-negative link survives untouched.
     expect(p.frames[2]!.continues).toBe(0);
   });
+
+  it("drops a first-frame gutter/echo (no predecessor) like sanitizeContinues drops junk", () => {
+    const raw = JSON.stringify({
+      story: "a tale",
+      frames: [
+        { prompt: "the plaza", gutter: "action", echo: 0, role: "establish" },
+        { prompt: "later", gutter: "action" },
+      ],
+    });
+    const p = parseDraftReply(raw);
+    expect(p.frames[0]!.gutter).toBeUndefined();
+    expect(p.frames[0]!.echo).toBeUndefined();
+    expect(p.frames[0]!.role).toBe("establish"); // roles ARE meaningful on the first beat
+    expect(p.frames[1]!.gutter).toBe("action");
+  });
+
+  it("drops out-of-vocabulary role/gutter values instead of failing the whole parse", () => {
+    const raw = JSON.stringify({
+      story: "a tale",
+      frames: [
+        { prompt: "the plaza", role: "twist" },
+        { prompt: "later", gutter: "flashback" },
+      ],
+    });
+    const p = parseDraftReply(raw);
+    expect(p.frames).toHaveLength(2);
+    expect(p.frames[0]!.role).toBeUndefined();
+    expect(p.frames[1]!.gutter).toBeUndefined();
+  });
+
+  it("drops sentinel echo values (-1/null) and an unknown plan structure, keeping the rest", () => {
+    const raw = JSON.stringify({
+      plan: { structure: "classic", theme: "vanity" },
+      story: "a tale",
+      frames: [
+        { prompt: "the plaza" },
+        { prompt: "the crowd", echo: -1 },
+        { prompt: "the turn", echo: null },
+        { prompt: "the close", echo: 0 },
+      ],
+    });
+    const p = parseDraftReply(raw);
+    expect(p.plan?.structure).toBe("kishotenketsu"); // defaulted, plan kept
+    expect(p.plan?.theme).toBe("vanity");
+    expect(p.frames[1]!.echo).toBeUndefined();
+    expect(p.frames[2]!.echo).toBeUndefined();
+    expect(p.frames[3]!.echo).toBe(0);
+  });
 });

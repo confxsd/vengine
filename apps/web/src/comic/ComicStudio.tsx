@@ -1,6 +1,7 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { Calculator, Clapperboard, Layers, Play, Plus, Telescope, X } from "lucide-react";
+import { Calculator, Clapperboard, Layers, Play, Plus, Telescope, X, AlertTriangle } from "lucide-react";
+import { cameraSizeOf, rhythmWarnings, SHOT_SIZE_LABELS, type ComicFrame } from "@vengine/shared";
 import { useComic } from "../comicStore";
 import { useLibrary } from "../libraryStore";
 import { LibraryButton } from "../components/LibraryButton";
@@ -198,22 +199,25 @@ export function ComicStudio() {
         </aside>
         <main className="min-w-0 flex-1 overflow-y-auto p-5">
           {project ? (
-            <div className="flex flex-wrap gap-4">
-              {project.frames.map((f, i) => (
-                <FrameCard
-                  key={f.id}
-                  frame={f}
-                  index={i}
-                  total={project.frames.length}
-                />
-              ))}
-              <button
-                onClick={addFrame}
-                className="flex aspect-[9/16] w-56 shrink-0 flex-col items-center justify-center gap-1.5 rounded-lg border border-dashed border-border text-sm text-faint transition-colors hover:border-accent/60 hover:text-muted"
-              >
-                <Plus className="h-6 w-6" />
-                Add frame
-              </button>
+            <div className="flex flex-col">
+              <RhythmRail frames={project.frames} />
+              <div className="flex flex-wrap gap-4">
+                {project.frames.map((f, i) => (
+                  <FrameCard
+                    key={f.id}
+                    frame={f}
+                    index={i}
+                    total={project.frames.length}
+                  />
+                ))}
+                <button
+                  onClick={addFrame}
+                  className="flex aspect-[9/16] w-56 shrink-0 flex-col items-center justify-center gap-1.5 rounded-lg border border-dashed border-border text-sm text-faint transition-colors hover:border-accent/60 hover:text-muted"
+                >
+                  <Plus className="h-6 w-6" />
+                  Add frame
+                </button>
+              </div>
             </div>
           ) : (
             <div className="text-sm text-faint">Loading…</div>
@@ -221,6 +225,47 @@ export function ComicStudio() {
         </main>
         {directorOpen && project && <DirectorPanel onClose={() => setDirectorOpen(false)} />}
       </div>
+    </div>
+  );
+}
+
+/** Thin rail above the frame strip: the designed shot-size sequence (from the
+ *  camera presets — free-text cameras don't participate) plus an advisory
+ *  warning when `rhythmWarnings` has notes. Advisory only; never blocks a run. */
+function RhythmRail({ frames }: { frames: ComicFrame[] }) {
+  const notes = useMemo(() => rhythmWarnings({ frames }), [frames]);
+  if (frames.length === 0) return null;
+  return (
+    <div
+      className="mb-3 flex flex-wrap items-center gap-2 text-[11px] text-faint"
+      title="Shot-size sequence (camera presets only) — the episode's designed rhythm"
+    >
+      <span className="text-[10px] font-medium uppercase tracking-wide">rhythm</span>
+      <span className="flex flex-wrap items-center gap-1 font-mono">
+        {frames.map((f, i) => {
+          const size = cameraSizeOf(f);
+          return (
+            <span key={f.id} className="flex items-center gap-1">
+              {i > 0 && <span className="text-faint/50">→</span>}
+              <span
+                className={size ? "text-muted" : ""}
+                title={`Frame ${i + 1}${f.camera ? `: ${f.camera}` : " (no camera set)"}`}
+              >
+                {i + 1}·{size ? SHOT_SIZE_LABELS[size] : "–"}
+              </span>
+            </span>
+          );
+        })}
+      </span>
+      {notes.length > 0 && (
+        <span
+          className="flex cursor-help items-center gap-1 text-amber"
+          title={notes.join("\n")}
+        >
+          <AlertTriangle className="h-3.5 w-3.5" />
+          {notes.length}
+        </span>
+      )}
     </div>
   );
 }

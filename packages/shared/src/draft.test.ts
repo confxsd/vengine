@@ -64,4 +64,45 @@ describe("DraftParseSchema", () => {
     expect(DraftFrameSchema.safeParse({ prompt: "x", continues: -1 }).success).toBe(false);
     expect(DraftFrameSchema.safeParse({ prompt: "x", continues: 1.5 }).success).toBe(false);
   });
+
+  it("accepts a planned parse: plan + per-frame role/gutter/echo (EPISODE_STUDIO §6)", () => {
+    const parse = DraftParseSchema.parse({
+      plan: {
+        structure: "detonate",
+        archetype: "rain-soaked neon night, mirrors everywhere",
+        strategy: "villain POV — Batman never fully seen",
+        theme: "vanity",
+        motif: "the cracked mirror",
+        token: "Joker keeps the torn photograph",
+      },
+      story: "The Joker tells a story in a bar.",
+      frames: [
+        { prompt: "the bar, mirrored wall", role: "establish" },
+        { prompt: "the tale begins", role: "develop", gutter: "action" },
+        { prompt: "pressure rises", role: "escalate", gutter: "subject" },
+        { prompt: "the punchline mirrors panel 1", role: "payoff", gutter: "action", echo: 0 },
+      ],
+    });
+    expect(parse.plan?.structure).toBe("detonate");
+    expect(parse.plan?.motif).toBe("the cracked mirror");
+    expect(parse.frames[0]!.role).toBe("establish");
+    expect(parse.frames[1]!.gutter).toBe("action");
+    expect(parse.frames[3]!.echo).toBe(0);
+  });
+
+  it("keeps plan/role/gutter/echo optional — a minimal parse stays valid", () => {
+    const parse = DraftParseSchema.parse({ story: "a tale", frames: [{ prompt: "a desk" }] });
+    expect(parse.plan).toBeUndefined();
+    expect(parse.frames[0]!.role).toBeUndefined();
+    expect(parse.frames[0]!.gutter).toBeUndefined();
+    expect(parse.frames[0]!.echo).toBeUndefined();
+  });
+
+  it("defaults partial plan fields; rejects unknown roles/gutters", () => {
+    const plan = DraftParseSchema.parse({ plan: { theme: "vanity" } }).plan;
+    expect(plan?.structure).toBe("kishotenketsu");
+    expect(plan?.archetype).toBe("");
+    expect(DraftFrameSchema.safeParse({ prompt: "x", role: "twist" }).success).toBe(false);
+    expect(DraftFrameSchema.safeParse({ prompt: "x", gutter: "flashback" }).success).toBe(false);
+  });
 });

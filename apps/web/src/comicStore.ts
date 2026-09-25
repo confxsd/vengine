@@ -3,7 +3,9 @@ import { toast } from "sonner";
 import {
   composeFramePrompt,
   frameIdFromNodeId,
+  gutterReconcile,
   leadRef,
+  structureRoleAt,
   styleReferences,
   stylePackToComicStyle,
   DEFAULT_REFERENCE_WEIGHT,
@@ -224,15 +226,21 @@ function matchCast(cast: ComicCharacter[]): Map<string, string> {
 }
 
 /** Turn a parsed draft into frame documents mapped onto the given cast. Pure — used
- *  by both `applyDraft` (into the current project) and `importStory` (a new episode). */
+ *  by both `applyDraft` (into the current project) and `importStory` (a new episode).
+ *  Structure fields ride along: roles (from the beat, else the plan's slot map),
+ *  gutters (beats 2+), and echo/continuity links (validated strictly-earlier),
+ *  with `gutterReconcile` run last so a typed gutter never contradicts a link. */
 function draftToFrames(parse: DraftParse, cast: ComicCharacter[]): ComicFrame[] {
   const byName = matchCast(cast);
-  const frames: ComicFrame[] = parse.frames.map((f) => {
+  const frames: ComicFrame[] = parse.frames.map((f, i) => {
     const ids = [
       ...new Set(
         f.characters.map((n) => byName.get(n.trim().toLowerCase())).filter((id): id is string => !!id),
       ),
     ];
+    // A beat the model left unroled defaults from the plan's slot map; with no
+    // plan at all, roles stay unset (old parses compose prompts unchanged).
+    const role = f.role ?? (parse.plan ? structureRoleAt(parse.plan.structure, i) : undefined);
     return {
       id: newFrameId(),
       prompt: f.prompt,
@@ -243,19 +251,26 @@ function draftToFrames(parse: DraftParse, cast: ComicCharacter[]): ComicFrame[] 
       ...(f.thread.trim() ? { thread: f.thread } : {}),
       ...(f.palette.length ? { palette: f.palette } : {}),
       ...(ids.length ? { characterIds: ids } : {}),
+      ...(role ? { role } : {}),
+      ...(i > 0 && f.gutter ? { gutter: f.gutter } : {}),
     };
   });
-  // Second pass: scene-continuity links by parsed index. A beat may continue a
-  // NON-ADJACENT frame of its storyline (frame 4 continuing frame 1), so links are
-  // resolved after all ids exist; the documented shape is strictly an EARLIER
-  // frame, so self/forward indices (observed from chatty models) are dropped.
+  // Second pass: scene-continuity and echo links by parsed index. A beat may
+  // continue (or echo) a NON-ADJACENT frame of its storyline (frame 4 continuing
+  // frame 1), so links are resolved after all ids exist; the documented shape is
+  // strictly an EARLIER frame, so self/forward indices (observed from chatty
+  // models) are dropped. Then gutters reconcile with the links (§3.3).
   parse.frames.forEach((f, i) => {
     const target = f.continues !== undefined && f.continues < i ? frames[f.continues] : undefined;
     if (target) {
       frames[i] = { ...frames[i]!, continuesFrameId: target.id };
     }
+    const echo = f.echo !== undefined && f.echo < i ? frames[f.echo] : undefined;
+    if (echo) {
+      frames[i] = { ...frames[i]!, echoFrameId: echo.id };
+    }
   });
-  return frames;
+  return gutterReconcile(frames);
 }
 
 export const useComic = create<ComicState>((set, get) => {
@@ -608,6 +623,7 @@ export const useComic = create<ComicState>((set, get) => {
         const episode: ComicProject = {
           ...created,
           ...(series ? { seriesId: series.id } : {}),
+          ...(parse.plan ? { plan: parse.plan } : {}),
           story: parse.story.trim() || created.story,
           ...(parse.storyMood.trim() ? { storyMood: parse.storyMood.trim() } : {}),
           settings: parse.settings.trim() || created.settings,
@@ -675,30 +691,53 @@ export const useComic = create<ComicState>((set, get) => {
         const story = opts.applyStory && parse.story.trim() ? parse.story : p.story;
         const settings = opts.applyStory && parse.settings.trim() ? parse.settings : p.settings;
         const storyMood = opts.applyStory && parse.storyMood.trim() ? parse.storyMood : p.storyMood;
+        // The parse's plan lands with a full replacement (the parse IS the
+        // episode) or when the project has none yet; appending beats to an
+        // already-planned episode keeps that plan.
+        const plan = parse.plan && (opts.replaceFrames || !p.plan) ? parse.plan : p.plan;
         return {
           ...p,
+          ...(plan ? { plan } : {}),
           story,
           settings,
           storyMood,
           frames: opts.replaceFrames ? newFrames : [...p.frames, ...newFrames],
         };
       }),
-    // Drop the frame and clear any continuation links pointing at it, so no frame
-    // is left referencing a deleted scene (compile ignores unknown ids regardless).
+    // Drop the frame and clear any continuation/echo links pointing at it, so no
+    // frame is left referencing a deleted scene (compile ignores unknown ids
+    // regardless).
     removeFrame: (id) => {
       set({ selectedFrameIds: get().selectedFrameIds.filter((fid) => fid !== id) });
       mutate((p) => ({
         ...p,
         frames: p.frames
           .filter((f) => f.id !== id)
-          .map((f) => (f.continuesFrameId === id ? { ...f, continuesFrameId: undefined } : f)),
+          .map((f) => {
+            // Clear each link independently: a frame continuing AND echoing the
+            // removed beat loses both.
+            const dropContinues = f.continuesFrameId === id;
+            const dropEcho = f.echoFrameId === id;
+            return dropContinues || dropEcho
+              ? {
+                  ...f,
+                  ...(dropContinues ? { continuesFrameId: undefined } : {}),
+                  ...(dropEcho ? { echoFrameId: undefined } : {}),
+                }
+              : f;
+          }),
       }));
     },
     patchFrame: (id, patch) =>
-      mutate((p) => ({
-        ...p,
-        frames: p.frames.map((f) => (f.id === id ? { ...f, ...patch } : f)),
-      })),
+      mutate((p) => {
+        const frames = p.frames.map((f) => (f.id === id ? { ...f, ...patch } : f));
+        // A gutter edit keeps the reconciliation promise its picker states:
+        // moment/action/subject hold the previous scene as reference, scene/
+        // aspect/nonsequitur break from it. `gutterReconcile` is idempotent and
+        // only touches frames carrying a gutter, so re-running it over the strip
+        // settles the edited frame without disturbing anything else.
+        return { ...p, frames: "gutter" in patch ? gutterReconcile(frames) : frames };
+      }),
     setFrameContinuation: (frameId, sourceId) =>
       get().patchFrame(frameId, { continuesFrameId: sourceId ?? undefined }),
     moveFrame: (id, dir) =>

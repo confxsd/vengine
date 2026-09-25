@@ -39,7 +39,8 @@ You have TWO jobs every turn:
   "reply": string,   // your discussion (shown in the chat)
   "changes": [       // the edits to apply, in order; [] when the note is pure discussion
     { "op": "updateProject", "story"?, "storyMood"?, "settings"?, "styleTheme"?, "palette"?: string[] },
-    { "op": "updateFrame", "frameIndex": number, "prompt"?, "script"?, "camera"?, "mood"?, "thread"?: string|null, "palette"?: string[]|null, "characterNames"?: string[]|null, "continuesFrameIndex"?: number|null },
+    { "op": "updatePlan", "structure"?: "kishotenketsu"|"detonate"|"continuous"|"framed-tale"|null, "archetype"?, "strategy"?, "theme"?, "motif"?, "token"?: string|null },
+    { "op": "updateFrame", "frameIndex": number, "prompt"?, "script"?, "camera"?, "mood"?, "thread"?: string|null, "palette"?: string[]|null, "characterNames"?: string[]|null, "continuesFrameIndex"?: number|null, "role"?: "establish"|"develop"|"escalate"|"turn"|"settle"|"payoff"|null, "gutter"?: "moment"|"action"|"subject"|"scene"|"aspect"|"nonsequitur"|null, "echoFrameIndex"?: number|null },
     { "op": "addFrame", "afterIndex": number, "prompt": string, "script"?, "mood"?, "thread"?, "palette"?: string[], "characterNames"?: string[] },
     { "op": "deleteFrame", "frameIndex": number },
     { "op": "moveFrame", "from": number, "to": number },
@@ -53,6 +54,10 @@ Semantics:
 - Indices are 0-based positions in the CURRENT frame list given in the context.
 - In each change, OMIT a field to keep it; set it to null (where allowed) to CLEAR it.
 - "characterNames": null means "whole cast appears"; an array means exactly those characters (any name or alias they're known by).
+- THE PLAN: the episode's creative configuration — structure (which proven 4-beat form), archetype (art direction), strategy (the experiment), theme, motif (the recurring image that pays off), token (passed to the next episode). Critique the episode AGAINST its plan: "P3 isn't reading as the turn — camera too close to P2", "the motif never recurs before the payoff", "this wants detonate, not kishōtenketsu". Edit it with "updatePlan"; changing "structure" automatically remaps every frame's role to the new slot map.
+- ROLES: each frame carries its role in the structure — establish / develop / escalate / turn / settle / payoff. Edit per-frame with "role" (null clears). The turn (or payoff) panel should take the episode's biggest camera change; P2 must add new information, never restate P1.
+- GUTTERS: each frame i≥1 carries the typed transition INTO it from the previous panel — moment (a heartbeat later) / action (meaningfully later — the default) / subject (same beat, new focal subject) / scene (a jump; at most one per episode) / aspect (no subject, texture/weather/light; first half only) / nonsequitur (a hard cut). Edit with "gutter" (null clears).
+- ECHO: a frame may mirror a strictly-earlier frame's composition — the bookend payout (P4 mirrors P1, changing exactly one thing). Set with "echoFrameIndex" (null clears). The echo governs composition, so a frame shouldn't also carry a continuation link.
 - "upsertCharacter" updates the canon character when the name/alias exists, otherwise creates one; "description" is the character's defining features (build, face, wardrobe signature) reused across every story for consistency.
 - ERAS: the same character recurs at different life stages across episodes (teen Bruce, young Bruce, mature Bruce…). Each canon character may carry named eras with their own age-bearing look. Use "setCharacterEra" to pin which era THIS episode's cast is in (e.g. era "teen"); give "description" when defining/refining what changes at that stage (age, build, face, wardrobe of THAT era). Then write frame prompts consistent with that stage's look.
 - STORYLINES: an episode may weave several storylines — a framing story (someone telling a tale) and the story told inside it, a flashback, a dream, a cutaway — and they can interleave (e.g. frames 1 & 4 the Joker in the bar, frames 2 & 3 his tale). Frames carry a "thread" label naming their storyline (absent = the main storyline). Make storylines read VISUALLY DISTINCT from each other — give each thread its own "mood" and "palette" (its colors override the episode palette for that frame) and keep them consistent within the thread. Contrast BETWEEN storylines, consistency WITHIN one; NEVER change the art style or medium — contrast comes from palette, lighting and mood only. Link a beat to the earlier frame it literally continues via "continuesFrameIndex", INCLUDING non-adjacent frames of an interleaved storyline (frame 4 continuing frame 1).
@@ -80,17 +85,37 @@ function frameSummary(project: ComicProject, i: number): string {
   const cont = f.continuesFrameId
     ? project.frames.findIndex((x) => x.id === f.continuesFrameId)
     : -1;
+  const echo = f.echoFrameId
+    ? project.frames.findIndex((x) => x.id === f.echoFrameId)
+    : -1;
   return [
-    `  [${i}] thread: ${f.thread || "(main)"} · camera: ${f.camera || "-"} · mood: ${
+    `  [${i}] role: ${f.role || "-"} · gutter: ${f.gutter || "-"} · thread: ${f.thread || "(main)"} · camera: ${f.camera || "-"} · mood: ${
       f.mood || "-"
     } · cast: ${castNames}${f.palette?.length ? ` · palette: ${f.palette.join(", ")}` : ""}${
       cont >= 0 ? ` · continues [${cont}]` : ""
-    }`,
+    }${echo >= 0 ? ` · echoes [${echo}]` : ""}`,
     `      prompt: ${f.prompt.slice(0, 300)}`,
     f.script ? `      script: ${f.script.slice(0, 200)}` : null,
   ]
     .filter(Boolean)
     .join("\n");
+}
+
+/** The episode plan as compact context lines (omitted when the project has none). */
+function planSummary(project: ComicProject): string | null {
+  const plan = project.plan;
+  if (!plan) return null;
+  const fields = [
+    `structure: ${plan.structure}`,
+    plan.archetype ? `archetype: ${plan.archetype}` : "",
+    plan.strategy ? `strategy: ${plan.strategy}` : "",
+    plan.theme ? `theme: ${plan.theme}` : "",
+    plan.motif ? `motif: ${plan.motif}` : "",
+    plan.token ? `token (next episode): ${plan.token}` : "",
+  ].filter(Boolean);
+  return [`EPISODE PLAN (critique the frames against it):`, ...fields.map((l) => `  ${l}`)].join(
+    "\n",
+  );
 }
 
 /** One-line sibling episode digest, so cross-story direction has the context. */
@@ -157,6 +182,7 @@ function buildContext(
     `settings: ${project.settings || "(none)"}`,
     `style theme (do not duplicate into frame prompts): ${project.style.theme}`,
     `palette: ${project.style.palette.join(", ") || "(none)"}`,
+    planSummary(project) ?? "",
     `frames (${project.frames.length}, indices 0-based):\n${project.frames
       .map((_, i) => frameSummary(project, i))
       .join("\n") || "  (none)"}`,

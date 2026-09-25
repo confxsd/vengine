@@ -1,0 +1,13 @@
+flowchart LR
+  draft["Paste draft"] --> parse["Draft parse v2 — plan + beats with role / gutter / camera"]
+  parse --> apply["Apply — project gains EpisodePlan, frames gain structure fields"]
+  apply --> notes["Review notes — rhythm warnings + gutter budget flags"]
+  notes --> waves["Wave runner — topological order over continues/echo links"]
+  subgraph perframe["Per frame"]
+    compose["composeFramePrompt v2 — art direction + role craft + transition + echo"] --> gen["generate.text-to-image"]
+  end
+  waves --> compose
+  gen --> loop["Editorial loop — VQQA gradients, best-of-3, Global Selection"]
+  loop --> judge["Strip judge — factored rubric, verdict feeds memory"]
+  judge --> pub["Publish — canon ledger append"]
+  pub --> next["Next episode greenlight — archive + series memory"]

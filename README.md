@@ -25,6 +25,10 @@ visual canvas, and the engine only ever re-runs (and re-bills) the parts that ac
   into a new episode, and generates every frame — you only wrote the story.
 - **Comic Studio** — a storyboard layer for the primary use case: ~4-frame, 9:16 vertical
   art comics. Iterate per frame, roll variants, pick the best, pay only for what you regenerate.
+- **Episode Studio** — the planned episode: one `EpisodePlan` (structure, art direction, theme,
+  motif) plus per-frame roles and typed gutters drive prompt composition; an optional echo mirrors
+  the opening frame; runs execute in dependency waves so continuations always see their source
+  image. Paste a draft and the parser plans the beats for you. See `docs/EPISODE_STUDIO.md`.
 
 ## Quick start
 
@@ -102,8 +106,8 @@ pnpm --filter @vengine/server story story.txt [--series the-batman] [--model fal
 ## Status
 
 Early but functional. Foundations and a vertical slice (generate → resize → export) work in
-the browser, and Comic Studio is implemented. See `docs/ENGINEERING.md` for the architecture,
-roadmap, and design rationale.
+the browser; Comic Studio is implemented, and Episode Studio Phase 1 (the planned episode) has
+landed. See `docs/ENGINEERING.md` for the architecture, roadmap, and design rationale.
 
 > **Note:** local-first and single-user by design. The server holds your API keys and bills
 > real money per generation — keep it on `127.0.0.1`. If you ever expose it publicly, add auth,

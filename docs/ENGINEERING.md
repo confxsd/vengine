@@ -704,3 +704,47 @@ PUT project → run; same wiring as `importStory`).
 edit-capable model — the universe default is `fal/nano-banana-pro`. `fal/seedream-v4` has no edit
 endpoint, so runs on it ride on the style text + cast descriptions alone (a deliberate cheap-draft
 mode); switching a project's model and re-running is one click.
+
+## 20. Episode Studio — planned episodes (implemented, Phase 1)
+
+Spec: [`docs/EPISODE_STUDIO.md`](EPISODE_STUDIO.md) (diagrams in `docs/diagrams/`) — the source of truth. Phase 1 makes the episode a
+**planned artifact** instead of four prompts composed in isolation: one `EpisodePlan` per project
+(structure / archetype / strategy / theme / motif / token), per-frame **roles** and typed **gutters**
+(McCloud's six), an optional **echo** (P4 mirrors P1), role/gutter-aware prompt composition, and
+dependency-ordered **wave runs**. Every field is optional/defaulted — a pre-plan project parses and
+composes byte-identical prompts (golden-tested), and preview == compile == run stays the single
+`composeFramePrompt` code path.
+
+**Where things live.** The plan vocabulary (`EPISODE_STRUCTURES`/`STRUCTURE_ROLES`, `FRAME_ROLES`,
+`GUTTER_TYPES`, `EpisodePlanSchema`, `structureRoleAt`) lives in `packages/shared/src/episode.ts` — a
+leaf module re-exported by `comic.ts` so `director.ts` can build on it without a comic ⇄ director
+import cycle. The machinery that uses it (`ROLE_FLAVORS`/`craftDirective(role)`,
+`TRANSITION_DIRECTIVES`/`transitionDirective(gutter)`, `echoDirective`/`echoReferences`,
+`artDirectionLines`, `gutterReconcile`, `rhythmWarnings`, `cameraSizeOf` on the new
+`CameraPreset.size`) is in `comic.ts`. `composeFramePrompt` v2 block order: template → art direction →
+craft (role-flavored) → camera → mood → palette → transition → one composition-governing directive
+(echo > continuity > plain reference; a resolved echo also LEADS `frameReferences`).
+
+**Draft parse v2 & apply.** `DraftParseSchema` gains `plan`; `DraftFrameSchema` gains
+`role`/`gutter`/`echo` (strictly-earlier indices like `continues`). The server system prompt is
+plan-first (role every beat, type every gutter ≤1 scene + aspect only in the first half, design the
+camera progression, P2 adds new info, offer an echo when the ending mirrors the opening); the
+sanitizer drops first-frame gutter/echo and out-of-vocabulary junk exactly like the old `continues:
+-1` leniency. `draftToFrames` (comicStore + `ingest-story.ts` parity) maps plan/role/gutter/echo,
+runs `gutterReconcile` (moment/action/subject auto-link to *i−1*; scene/aspect/nonsequitur clear
+adjacent links but never a non-adjacent framed-tale return), and `DraftModal` shows a plan card,
+role/gutter/echo chips and advisory review notes (`rhythmWarnings`) — notes advise, apply proceeds.
+
+**Wave runner.** `/api/comics/:id/run` executes in dependency waves (`partitionWaves` in
+`apps/server/src/comics.ts`, pure + unit-tested): a frame is ready when its
+`continuesFrameId`/`echoFrameId` is unset, outside the selection, or resolved to an existing image;
+each wave is the regular `runHost` path, persisted before the next wave compiles — so continuations
+and echoes always see their source's finished image. Independent frames stay concurrent; cycles fall
+through to a final wave (unresolved links drop defensively); unchanged frames are content-addressed
+cache hits (run twice → second run free).
+
+**Director.** New `updatePlan` op (a `structure` change remaps every frame's role to the new slot map
+and logs it) and `updateFrame` extensions (`role`, `gutter`, `echoFrameIndex`, all clearable; invalid
+targets skipped & surfaced). The director's context carries the plan and per-frame role/gutter/echo,
+and the system prompt critiques against the plan ("P3 isn't reading as the turn"). `deleteFrame`
+clears echo links to the removed frame, like continuity links.

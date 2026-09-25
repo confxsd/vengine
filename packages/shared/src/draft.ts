@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { EpisodePlanSchema, FRAME_ROLES, GUTTER_TYPES } from "./comic.js";
 
 /**
  * **Draft import** — the front door for authors who write their story as free prose
@@ -62,6 +63,28 @@ export const DraftFrameSchema = z.object({
    * Applied as the frame's `continuesFrameId` (scene-continuity reference).
    */
   continues: z.number().int().nonnegative().optional(),
+  /**
+   * This beat's role in the episode structure (`establish | develop | escalate |
+   * turn | settle | payoff`) — every beat is roled from the plan's slot map.
+   * Absent = the apply path defaults it from `plan.structure` (and stays unset
+   * when the parse carries no plan). Applied as the frame's `role`.
+   */
+  role: z.enum(FRAME_ROLES).optional(),
+  /**
+   * The typed gutter between the previous beat and this one (McCloud's six:
+   * `moment | action | subject | scene | aspect | nonsequitur`), beats 2+
+   * only — it describes the transition INTO this panel. Meaningless on the
+   * first beat and dropped there by the server sanitizer. Applied as the
+   * frame's `gutter` and reconciled with `continues` (`gutterReconcile`).
+   */
+  gutter: z.enum(GUTTER_TYPES).optional(),
+  /**
+   * 0-based index of an EARLIER parsed frame whose composition this beat
+   * mirrors — the bookend payout, offered only when the ending genuinely
+   * mirrors the opening (strictly-earlier, exactly like `continues`).
+   * Applied as the frame's `echoFrameId` (the echo reference leads).
+   */
+  echo: z.number().int().nonnegative().optional(),
 });
 export type DraftFrame = z.infer<typeof DraftFrameSchema>;
 
@@ -70,6 +93,13 @@ export type DraftFrame = z.infer<typeof DraftFrameSchema>;
 export const DraftParseSchema = z.object({
   /** A short title inferred from the draft, if any. */
   title: z.string().default(""),
+  /**
+   * The episode's creative plan (spec EPISODE_STUDIO §6: plan first, beats
+   * second) — structure, art direction, strategy, theme, motif, token. Absent
+   * on parses from models that don't emit it (or old cached parses): frames
+   * then land without roles and the project without a plan, exactly as before.
+   */
+  plan: EpisodePlanSchema.optional(),
   /** The overall narrative arc as prose (drops straight into the project `story`). */
   story: z.string().default(""),
   /** The story's prevailing emotional tone, derived from its theme (project `storyMood`). */

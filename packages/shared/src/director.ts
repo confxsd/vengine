@@ -1,4 +1,15 @@
 import { z } from "zod";
+// The plan vocabulary comes from the leaf `episode.ts` (re-exported by comic.ts):
+// importing the VALUES from comic.ts would create a comic ⇄ director runtime
+// cycle (comic imports DirectorMessageSchema from this file).
+import {
+  EPISODE_STRUCTURES,
+  EpisodePlanSchema,
+  FRAME_ROLES,
+  GUTTER_TYPES,
+  structureRoleAt,
+  type EpisodePlan,
+} from "./episode.js";
 import type { ComicCharacter, ComicFrame, ComicProject } from "./comic.js";
 import type { Library, LibraryCharacter } from "./library.js";
 import type { Series } from "./scene.js";
@@ -44,6 +55,20 @@ export const DirectorChangeSchema = z.discriminatedUnion("op", [
     /** Rewrites `style.palette` (the color lock). */
     palette: z.array(z.string()).optional(),
   }),
+  /**
+   * Edit the episode's creative plan. A `structure` change remaps every frame's
+   * role to the new slot map (`structureRoleAt`) and logs it; the text fields
+   * are clearable via null (structure null resets to the default form).
+   */
+  z.object({
+    op: z.literal("updatePlan"),
+    structure: z.enum(EPISODE_STRUCTURES).nullable().optional(),
+    archetype: clearableString,
+    strategy: clearableString,
+    theme: clearableString,
+    motif: clearableString,
+    token: clearableString,
+  }),
   /** Edit one frame by 0-based position. Omitted fields are kept; `null` clears. */
   z.object({
     op: z.literal("updateFrame"),
@@ -60,6 +85,12 @@ export const DirectorChangeSchema = z.discriminatedUnion("op", [
     characterNames: z.array(z.string()).nullable().optional(),
     /** Link this frame as a continuation of the frame at that 0-based index. */
     continuesFrameIndex: index.nullable().optional(),
+    /** This panel's role in the structure; null clears (no role flavor). */
+    role: z.enum(FRAME_ROLES).nullable().optional(),
+    /** The typed gutter into this panel; null clears. */
+    gutter: z.enum(GUTTER_TYPES).nullable().optional(),
+    /** Mirror the composition of the frame at that 0-based index (the bookend payout). */
+    echoFrameIndex: index.nullable().optional(),
   }),
   /** Insert a new frame after `afterIndex` (-1-equivalent not needed: 0 = first). */
   z.object({
@@ -326,6 +357,48 @@ export function applyDirectorChanges(
         if (parts.length) log.push(`episode: ${parts.join(" · ")}`);
         break;
       }
+      case "updatePlan": {
+        const planFields = [
+          "structure",
+          "archetype",
+          "strategy",
+          "theme",
+          "motif",
+          "token",
+        ] as const;
+        if (!planFields.some((k) => change[k] !== undefined)) break; // nothing to do
+        const parts: string[] = [];
+        let plan: EpisodePlan = next.plan ?? EpisodePlanSchema.parse({});
+        if (change.structure !== undefined) {
+          // null resets to the default form (an enum with a default has no "unset").
+          const structure = change.structure ?? "kishotenketsu";
+          const remap = structure !== plan.structure;
+          plan = { ...plan, structure };
+          parts.push(
+            change.structure
+              ? `structure → ${structure}${remap ? " (frame roles remapped)" : ""}`
+              : `structure reset to ${structure}`,
+          );
+          if (remap) {
+            // The slots' meaning changes with the form: remap every frame's role
+            // to the new structure's map so roles and plan never disagree.
+            next = {
+              ...next,
+              frames: next.frames.map((f, i) => ({ ...f, role: structureRoleAt(structure, i) })),
+            };
+          }
+        }
+        for (const key of ["archetype", "strategy", "theme", "motif", "token"] as const) {
+          const v = change[key];
+          if (v !== undefined) {
+            plan = { ...plan, [key]: v ?? "" };
+            parts.push(v ? `${key} → “${v}”` : `${key} cleared`);
+          }
+        }
+        next = { ...next, plan };
+        log.push(`plan: ${parts.join(" · ")}`);
+        break;
+      }
       case "updateFrame": {
         const i = change.frameIndex;
         const frame = next.frames[i];
@@ -391,6 +464,26 @@ export function applyDirectorChanges(
             skipped.push(`${frameNo(i)}: invalid continuation target`);
           }
         }
+        if (change.role !== undefined) {
+          f = { ...f, role: change.role ?? undefined };
+          parts.push(change.role ? `role → ${change.role}` : "role cleared");
+        }
+        if (change.gutter !== undefined) {
+          f = { ...f, gutter: change.gutter ?? undefined };
+          parts.push(change.gutter ? `gutter → ${change.gutter}` : "gutter cleared");
+        }
+        if (change.echoFrameIndex !== undefined) {
+          const target = next.frames[change.echoFrameIndex ?? -1];
+          if (change.echoFrameIndex === null) {
+            f = { ...f, echoFrameId: undefined };
+            parts.push("echo cleared");
+          } else if (target && target.id !== f.id) {
+            f = { ...f, echoFrameId: target.id };
+            parts.push(`echoes ${frameNo(change.echoFrameIndex)}`);
+          } else {
+            skipped.push(`${frameNo(i)}: invalid echo target`);
+          }
+        }
         if (parts.length) {
           next = { ...next, frames: next.frames.map((x) => (x.id === f.id ? f : x)) };
           log.push(`${frameNo(i)}: ${parts.join(" · ")}`);
@@ -429,8 +522,19 @@ export function applyDirectorChanges(
           ...next,
           frames: next.frames
             .filter((_, x) => x !== i)
-            // Frames continuing the removed frame keep rendering — just drop the link.
-            .map((f) => (f.continuesFrameId === removedId ? { ...f, continuesFrameId: undefined } : f)),
+            // Frames continuing (or echoing) the removed frame keep rendering —
+            // just drop the link (each independently: a frame doing both loses both).
+            .map((f) => {
+              const dropContinues = f.continuesFrameId === removedId;
+              const dropEcho = f.echoFrameId === removedId;
+              return dropContinues || dropEcho
+                ? {
+                    ...f,
+                    ...(dropContinues ? { continuesFrameId: undefined } : {}),
+                    ...(dropEcho ? { echoFrameId: undefined } : {}),
+                  }
+                : f;
+            }),
         };
         log.push(`deleted ${frameNo(i)}`);
         break;

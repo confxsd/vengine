@@ -329,6 +329,90 @@ describe("applyDirectorChanges", () => {
     expect(out.log).toHaveLength(0);
   });
 
+  it("updatePlan creates/edits the plan; null clears a text field", () => {
+    const out = applyDirectorChanges(project(), library(), null, [
+      {
+        op: "updatePlan",
+        archetype: "rain-soaked neon night",
+        theme: "vanity",
+        motif: "the cracked mirror",
+      },
+    ]);
+    expect(out.project.plan?.archetype).toBe("rain-soaked neon night");
+    expect(out.project.plan?.theme).toBe("vanity");
+    expect(out.project.plan?.structure).toBe("kishotenketsu"); // default when unspecified
+    expect(out.log.join(" ")).toContain("plan:");
+
+    const cleared = applyDirectorChanges(out.project, library(), null, [
+      { op: "updatePlan", motif: null, token: "Joker keeps the torn photograph" },
+    ]);
+    expect(cleared.project.plan?.motif).toBe("");
+    expect(cleared.project.plan?.token).toBe("Joker keeps the torn photograph");
+  });
+
+  it("updatePlan.structure remaps every frame's role to the new slot map", () => {
+    const planned = project({
+      plan: { structure: "kishotenketsu" },
+      frames: [
+        { id: "a", prompt: "1", role: "establish" },
+        { id: "b", prompt: "2", role: "develop" },
+        { id: "c", prompt: "3", role: "turn" },
+        { id: "d", prompt: "4", role: "settle" },
+      ],
+    });
+    const out = applyDirectorChanges(planned, library(), null, [
+      { op: "updatePlan", structure: "detonate" },
+    ]);
+    expect(out.project.plan?.structure).toBe("detonate");
+    expect(out.project.frames.map((f) => f.role)).toEqual([
+      "establish",
+      "develop",
+      "escalate",
+      "payoff",
+    ]);
+    expect(out.log.join(" ")).toContain("remapped");
+  });
+
+  it("updateFrame edits role/gutter/echo (null clears; invalid echo targets skipped & surfaced)", () => {
+    const p = project();
+    const out = applyDirectorChanges(p, library(), null, [
+      { op: "updateFrame", frameIndex: 1, role: "turn", gutter: "action", echoFrameIndex: 0 },
+    ]);
+    const f = out.project.frames[1]!;
+    expect(f.role).toBe("turn");
+    expect(f.gutter).toBe("action");
+    expect(f.echoFrameId).toBe("a");
+    expect(out.log.join(" ")).toContain("echoes frame 1");
+
+    const cleared = applyDirectorChanges(out.project, library(), null, [
+      { op: "updateFrame", frameIndex: 1, role: null, gutter: null, echoFrameIndex: null },
+    ]);
+    const f2 = cleared.project.frames[1]!;
+    expect(f2.role).toBeUndefined();
+    expect(f2.gutter).toBeUndefined();
+    expect(f2.echoFrameId).toBeUndefined();
+
+    const bad = applyDirectorChanges(p, library(), null, [
+      { op: "updateFrame", frameIndex: 1, echoFrameIndex: 1 }, // self
+      { op: "updateFrame", frameIndex: 1, echoFrameIndex: 99 }, // out of range
+    ]);
+    expect(bad.skipped).toHaveLength(2);
+    expect(bad.skipped.every((s) => s.includes("invalid echo target"))).toBe(true);
+  });
+
+  it("deleteFrame also clears echo links pointing at the removed frame", () => {
+    const p = project({
+      frames: [
+        { id: "a", prompt: "the opening" },
+        { id: "b", prompt: "the close mirrors the opening", echoFrameId: "a" },
+        { id: "c", prompt: "the middle" },
+      ],
+    });
+    const out = applyDirectorChanges(p, library(), null, [{ op: "deleteFrame", frameIndex: 0 }]);
+    const echoing = out.project.frames.find((f) => f.id === "b")!;
+    expect(echoing.echoFrameId).toBeUndefined();
+  });
+
   it("updates the series concept and reports it in the library", () => {
     const s = series({ concept: "old" });
     const lib = library();
@@ -360,5 +444,13 @@ describe("DirectorReplySchema", () => {
     });
     expect(reply.changes[0]).toEqual({ op: "moveFrame", from: 0, to: 2 });
     expect(DirectorReplySchema.safeParse({ changes: [{ op: "nope" }] }).success).toBe(false);
+    // The plan op parses, with its closed structure vocabulary.
+    const planned = DirectorReplySchema.parse({
+      changes: [{ op: "updatePlan", structure: "detonate", theme: "vanity" }],
+    });
+    expect(planned.changes[0]).toMatchObject({ op: "updatePlan", structure: "detonate" });
+    expect(
+      DirectorReplySchema.safeParse({ changes: [{ op: "updatePlan", structure: "nope" }] }).success,
+    ).toBe(false);
   });
 });

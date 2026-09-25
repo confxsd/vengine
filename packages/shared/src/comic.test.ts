@@ -2,6 +2,8 @@ import { describe, it, expect } from "vitest";
 import { builtinStylePacks } from "./library.js";
 import {
   ComicProjectSchema,
+  ComicFrameSchema,
+  EpisodePlanSchema,
   compileComic,
   compileEditFrame,
   composeFramePrompt,
@@ -14,11 +16,26 @@ import {
   unionVariants,
   frameReferenceHashes,
   frameReferences,
+  echoReferences,
+  echoDirective,
   continuityDirective,
   referenceDirective,
   paletteDirective,
   cameraDirective,
+  craftDirective,
+  transitionDirective,
+  ROLE_FLAVORS,
+  TRANSITION_DIRECTIVES,
   CRAFT_DIRECTIVE,
+  artDirectionLines,
+  cameraSizeOf,
+  gutterReconcile,
+  rhythmWarnings,
+  structureRoleAt,
+  STRUCTURE_ROLES,
+  FRAME_ROLES,
+  GUTTER_TYPES,
+  GUTTER_EFFORT,
   identityReferences,
   leadRef,
   styleReferences,
@@ -27,6 +44,7 @@ import {
   DEFAULT_NEGATIVE,
   DEFAULT_WIDTH,
   DEFAULT_HEIGHT,
+  type ComicFrame,
   type ComicProject,
 } from "./comic.js";
 
@@ -807,5 +825,448 @@ describe("built-in style packs (comic decoupling)", () => {
     expect(comic.negative).toMatch(/panel|border|speech bubble/);
     expect(oil.negative).not.toMatch(/panel|border|speech bubble|watermark/);
     expect(oil.negative).not.toBe(comic.negative);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Episode Studio Phase 1 — planned episodes (docs/EPISODE_STUDIO.md §13)
+// ---------------------------------------------------------------------------
+
+/** The house craft sentence, verbatim — inlined (not via CRAFT_DIRECTIVE) so the
+ *  golden tests below pin the exact bytes the previous release composed. */
+const CRAFT_GOLDEN =
+  "Craft: compose this frame like a masterwork — deliberate cinematic staging (dynamic framing, layered depth, intentional negative space), figures whose posture, gesture, hands, gaze and facial expression carry the beat's meaning, motivated lighting, and symbolic objects or environmental detail placed with intention.";
+
+/** Minimal frame literal for the structure/reconcile/rhythm suites. */
+const fr = (id: string, extra: Record<string, unknown> = {}): ComicFrame =>
+  ComicFrameSchema.parse({ id, prompt: id, ...extra });
+
+describe("episode plan schemas (no migration)", () => {
+  it("an old-style project JSON parses with every new field absent", () => {
+    const old = ComicProjectSchema.parse({
+      id: "old",
+      name: "Legacy",
+      frames: [{ id: "a", prompt: "x" }],
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    });
+    expect(old.plan).toBeUndefined();
+    expect(old.frames[0]!.role).toBeUndefined();
+    expect(old.frames[0]!.gutter).toBeUndefined();
+    expect(old.frames[0]!.echoFrameId).toBeUndefined();
+  });
+
+  it("EpisodePlanSchema defaults everything; structure slot maps are data", () => {
+    const plan = EpisodePlanSchema.parse({});
+    expect(plan.structure).toBe("kishotenketsu");
+    expect(plan.archetype).toBe("");
+    expect(STRUCTURE_ROLES.detonate).toEqual(["establish", "develop", "escalate", "payoff"]);
+    expect(STRUCTURE_ROLES.kishotenketsu).toEqual(["establish", "develop", "turn", "settle"]);
+    // Beyond the four slots, roles repeat develop/escalate (documented extension).
+    expect(structureRoleAt("kishotenketsu", 2)).toBe("turn");
+    expect(structureRoleAt("kishotenketsu", 4)).toBe("develop");
+    expect(structureRoleAt("kishotenketsu", 5)).toBe("escalate");
+    expect(structureRoleAt("detonate", 3)).toBe("payoff");
+  });
+
+  it("camera presets carry coarse sizes; cameraSizeOf maps value → size", () => {
+    expect(cameraSizeOf(fr("a", { camera: "wide shot" }))).toBe("wide");
+    expect(cameraSizeOf(fr("a", { camera: "extreme wide establishing shot" }))).toBe("xws");
+    expect(cameraSizeOf(fr("a", { camera: "extreme close-up" }))).toBe("xcu");
+    // Angle presets say nothing about distance — nor does free text or no camera.
+    expect(cameraSizeOf(fr("a", { camera: "low-angle shot looking up" }))).toBeUndefined();
+    expect(cameraSizeOf(fr("a", { camera: "dutch tilt, hand-cranked chaos" }))).toBeUndefined();
+    expect(cameraSizeOf(fr("a"))).toBeUndefined();
+    expect(cameraSizeOf(fr("a", { camera: "  " }))).toBeUndefined();
+  });
+});
+
+describe("composeFramePrompt v2 — golden (pre-plan projects compose byte-identically)", () => {
+  it("old-style project: template + craft + camera + mood + palette, exactly as v1", () => {
+    const p = project({
+      style: { theme: "ink", model: "mock/gradient", seed: 1, palette: ["#123456"] },
+      frames: [{ id: "a", prompt: "a plaza", camera: "wide shot", mood: "quiet dread" }],
+    });
+    expect(composeFramePrompt(p, p.frames[0]!)).toBe(
+      [
+        "a plaza",
+        "",
+        "Setting: a rain-soaked neon city at night",
+        "Style: ink",
+        "",
+        CRAFT_GOLDEN,
+        "",
+        "Camera: wide shot.",
+        "",
+        "Mood: quiet dread.",
+        "",
+        "Color palette: render using only this limited palette — #123456.",
+      ].join("\n"),
+    );
+  });
+
+  it("old-style continuation project: v1 order with the continuity directive trailing", () => {
+    const img = "d".repeat(64);
+    const p = project({
+      frames: [
+        { id: "a", prompt: "a wide shot of the plaza", resultHash: img },
+        { id: "b", prompt: "the crowd scatters", continuesFrameId: "a" },
+      ],
+    });
+    expect(composeFramePrompt(p, p.frames[1]!)).toBe(
+      [
+        "the crowd scatters",
+        "",
+        "Setting: a rain-soaked neon city at night",
+        "Style: muted ink wash, heavy grain, cinematic",
+        "",
+        CRAFT_GOLDEN,
+        "",
+        continuityDirective("restage"),
+      ].join("\n"),
+    );
+  });
+});
+
+describe("composeFramePrompt v2 — art direction & roles", () => {
+  it("composes the plan's art-direction block after the scene, before craft", () => {
+    const p = project({
+      plan: {
+        structure: "kishotenketsu",
+        archetype: "rain-soaked neon night, mirrors everywhere",
+        theme: "vanity",
+        motif: "the cracked mirror",
+      },
+      frames: [{ id: "a", prompt: "a plaza", role: "establish" }],
+    });
+    const out = composeFramePrompt(p, p.frames[0]!);
+    expect(out).toContain("Art direction: rain-soaked neon night, mirrors everywhere.");
+    expect(out).toContain("Theme: vanity.");
+    expect(out).toContain('Motif: weave "the cracked mirror" into this frame only where it earns its place.');
+    const artAt = out.indexOf("Art direction:");
+    expect(artAt).toBeGreaterThan(out.indexOf("a plaza")); // after the template
+    expect(artAt).toBeLessThan(out.indexOf(CRAFT_DIRECTIVE)); // before craft
+    // Role flavor merges into the craft paragraph, after the house sentence.
+    expect(out).toContain(`${CRAFT_DIRECTIVE} ${ROLE_FLAVORS.establish}`);
+  });
+
+  it("drops art-direction lines whose value is empty; an all-empty plan emits nothing", () => {
+    expect(artDirectionLines(undefined)).toEqual([]);
+    expect(artDirectionLines(EpisodePlanSchema.parse({}))).toEqual([]);
+    expect(artDirectionLines(EpisodePlanSchema.parse({ motif: "the cracked mirror" }))).toEqual([
+      'Motif: weave "the cracked mirror" into this frame only where it earns its place.',
+    ]);
+    // Trailing punctuation on the values is normalised, not doubled.
+    expect(artDirectionLines(EpisodePlanSchema.parse({ archetype: "neon night." }))).toEqual([
+      "Art direction: neon night.",
+    ]);
+    const p = project({ plan: { structure: "detonate" }, frames: [{ id: "a", prompt: "x" }] });
+    expect(composeFramePrompt(p, p.frames[0]!)).not.toMatch(/Art direction:|Theme:|Motif:/);
+  });
+
+  it("craftDirective: house baseline verbatim without a role; flavor appended with one", () => {
+    expect(craftDirective()).toBe(CRAFT_DIRECTIVE);
+    expect(craftDirective(undefined)).toBe(CRAFT_DIRECTIVE);
+    for (const role of FRAME_ROLES) {
+      expect(craftDirective(role)).toBe(`${CRAFT_DIRECTIVE} ${ROLE_FLAVORS[role]}`);
+      expect(ROLE_FLAVORS[role].length).toBeGreaterThan(20); // every slot has teeth
+    }
+  });
+});
+
+describe("composeFramePrompt v2 — typed gutters", () => {
+  it("emits the transition directive on entering frames, after the palette and before the composition directive", () => {
+    const img = "d".repeat(64);
+    const p = project({
+      style: { theme: "ink", model: "mock/gradient", seed: 1, palette: ["#123456"] },
+      frames: [
+        { id: "a", prompt: "the plaza", resultHash: img },
+        { id: "b", prompt: "later, the crowd gone", gutter: "action", continuesFrameId: "a" },
+      ],
+    });
+    const out = composeFramePrompt(p, p.frames[1]!);
+    expect(out).toContain(TRANSITION_DIRECTIVES.action);
+    const transitionAt = out.indexOf("Transition:");
+    expect(transitionAt).toBeGreaterThan(out.indexOf("Color palette:"));
+    expect(transitionAt).toBeLessThan(out.indexOf("Continuity:"));
+  });
+
+  it("a frame without a gutter emits nothing; a stale gutter on the first frame emits nothing", () => {
+    const p = project({
+      frames: [
+        { id: "a", prompt: "x", gutter: "action" }, // meaningless without a predecessor
+        { id: "b", prompt: "y" },
+      ],
+    });
+    expect(composeFramePrompt(p, p.frames[0]!)).not.toMatch(/Transition/);
+    expect(composeFramePrompt(p, p.frames[1]!)).not.toMatch(/Transition/);
+    expect(transitionDirective(undefined)).toBe("");
+    // Every gutter type carries its directive (machinery, not taxonomy).
+    for (const g of GUTTER_TYPES) expect(transitionDirective(g)).toBe(TRANSITION_DIRECTIVES[g]);
+  });
+});
+
+describe("composeFramePrompt v2 — echo (the bookend payout)", () => {
+  const echoImg = "1".repeat(64);
+  const contImg = "2".repeat(64);
+  const hero = "3".repeat(64);
+  const anchor = "4".repeat(64);
+
+  function echoProject() {
+    return project({
+      style: { theme: "ink", model: "mock/gradient", seed: 1, anchors: [{ hash: anchor, weight: 0.5 }] },
+      cast: [{ id: "hero", name: "Hero", refHashes: [hero] }],
+      frames: [
+        { id: "a", prompt: "the opening composition", resultHash: echoImg },
+        { id: "b", prompt: "the middle", resultHash: contImg },
+        { id: "c", prompt: "the closing mirrors the opening", continuesFrameId: "b", echoFrameId: "a" },
+      ],
+    });
+  }
+
+  it("a resolved echo LEADS the reference order, ahead of continuity, cast and style (deduped)", () => {
+    const p = echoProject();
+    expect(frameReferences(p, p.frames[2]!)).toEqual([
+      { hash: echoImg, weight: 1 },
+      { hash: contImg, weight: 1 },
+      { hash: hero, weight: 1 },
+      { hash: anchor, weight: 0.5 },
+    ]);
+    expect(echoReferences(p, p.frames[2]!)).toEqual([{ hash: echoImg, weight: 1 }]);
+  });
+
+  it("a resolved echo governs composition — echo directive replaces continuity/reference", () => {
+    const p = echoProject();
+    const out = composeFramePrompt(p, p.frames[2]!);
+    expect(out).toContain(echoDirective(true)); // cast/style sheets ride along
+    expect(out).not.toMatch(/Continuity:/); // continuity no longer governs
+    expect(out).not.toContain(referenceDirective("compose"));
+  });
+
+  it("echo directive wording splits composition from identity sheets only when sheets exist", () => {
+    expect(echoDirective()).not.toContain("Remaining attached images");
+    expect(echoDirective(true)).toContain("character and style reference sheets");
+    expect(echoDirective()).toContain("FIRST attached image");
+  });
+
+  it("an unresolved echo (source has no image) emits no directive and no reference — links resolve defensively", () => {
+    const p = project({
+      frames: [
+        { id: "a", prompt: "not generated yet" },
+        { id: "b", prompt: "the closing", echoFrameId: "a" },
+      ],
+    });
+    expect(frameReferenceHashes(p, p.frames[1]!)).toEqual([]);
+    expect(composeFramePrompt(p, p.frames[1]!)).not.toMatch(/Echo:/);
+  });
+
+  it("echo + continuity both set → echo wins AND a review note fires", () => {
+    const p = echoProject();
+    const notes = rhythmWarnings({ frames: p.frames });
+    expect(notes.some((n) => n.includes("both an echo and a continuity link"))).toBe(true);
+  });
+});
+
+describe("preview == compile (single prompt code path)", () => {
+  it("the compiled generation node's prompt is exactly composeFramePrompt, all v2 features on", () => {
+    const img = "d".repeat(64);
+    const p = project({
+      plan: { structure: "detonate", archetype: "neon night", theme: "vanity", motif: "the mirror" },
+      style: { theme: "ink", model: "mock/gradient", seed: 1, palette: ["#123456"] },
+      cast: [{ id: "hero", name: "Hero", refHashes: ["e".repeat(64)] }],
+      frames: [
+        { id: "a", prompt: "opening", role: "establish", camera: "wide shot", resultHash: img },
+        { id: "b", prompt: "develops", role: "develop", gutter: "action", continuesFrameId: "a" },
+        { id: "c", prompt: "turns", role: "escalate", gutter: "subject", camera: "extreme close-up" },
+        { id: "d", prompt: "pays off mirroring panel 1", role: "payoff", gutter: "action", echoFrameId: "a" },
+      ],
+    });
+    const g = compileComic(p);
+    for (const f of p.frames) {
+      expect(g.nodes.find((n) => n.id === genNodeId(f.id))!.params.prompt).toBe(
+        composeFramePrompt(p, f),
+      );
+    }
+  });
+});
+
+describe("gutter reconciliation (spec §3.3)", () => {
+  it("moment/action/subject with no explicit continues auto-links to the predecessor", () => {
+    const out = gutterReconcile([
+      fr("a"),
+      fr("b", { gutter: "action" }),
+      fr("c", { gutter: "subject" }),
+      fr("d", { gutter: "moment" }),
+    ]);
+    expect(out[1]!.continuesFrameId).toBe("a");
+    expect(out[2]!.continuesFrameId).toBe("b");
+    expect(out[3]!.continuesFrameId).toBe("c");
+  });
+
+  it("an explicit link is authoritative under a linking gutter — including non-adjacent", () => {
+    // The framed-tale return: P4 action-continuing P1 keeps its explicit link.
+    const out = gutterReconcile([
+      fr("a"),
+      fr("b", { gutter: "action" }),
+      fr("c"),
+      fr("d", { gutter: "action", continuesFrameId: "a" }),
+    ]);
+    expect(out[1]!.continuesFrameId).toBe("a"); // auto-link goes to ITS predecessor
+    expect(out[3]!.continuesFrameId).toBe("a"); // NOT overwritten with "c"
+  });
+
+  it("scene/aspect/nonsequitur clear an adjacent (auto-shaped) link", () => {
+    for (const gutter of ["scene", "aspect", "nonsequitur"] as const) {
+      const out = gutterReconcile([
+        fr("a"),
+        fr("b", { gutter, continuesFrameId: "a" }),
+      ]);
+      expect(out[1]!.continuesFrameId).toBeUndefined();
+    }
+  });
+
+  it("scene/aspect/nonsequitur never clear an explicit NON-adjacent link", () => {
+    const out = gutterReconcile([
+      fr("a"),
+      fr("b"),
+      fr("c"),
+      fr("d", { gutter: "scene", continuesFrameId: "a" }), // the return to P1's scene
+    ]);
+    expect(out[3]!.continuesFrameId).toBe("a");
+  });
+
+  it("the first frame passes through untouched; pure — unchanged frames keep identity", () => {
+    const frames = [fr("a", { gutter: "scene" }), fr("b"), fr("c", { gutter: "action" })];
+    const out = gutterReconcile(frames);
+    expect(out[0]).toBe(frames[0]); // no predecessor → untouched, even with a stale gutter
+    expect(out[1]).toBe(frames[1]); // no gutter → untouched
+    expect(out[2]).not.toBe(frames[2]); // reconciled → copied
+    expect(out[2]!.continuesFrameId).toBe("b");
+  });
+
+  it("a junk self-link under a linking gutter shapes like 'no link' — auto-links to the predecessor", () => {
+    // Compile drops self-links anyway; reconciliation must not treat one as an
+    // authoritative explicit link, or the frame would keep a link that never feeds.
+    const out = gutterReconcile([
+      fr("a"),
+      fr("b", { gutter: "action", continuesFrameId: "b" }),
+    ]);
+    expect(out[1]!.continuesFrameId).toBe("a");
+  });
+});
+
+describe("rhythm warnings (advisory only)", () => {
+  it("flags adjacent identical preset sizes — unless the gutter is moment", () => {
+    const dup = [fr("a", { camera: "wide shot" }), fr("b", { camera: "wide shot" })];
+    expect(rhythmWarnings({ frames: dup }).some((n) => n.includes("repeat the same wide shot"))).toBe(true);
+    const held = [
+      fr("a", { camera: "wide shot" }),
+      fr("b", { camera: "wide shot", gutter: "moment" }), // a legitimate tight hold
+    ];
+    expect(rhythmWarnings({ frames: held }).some((n) => n.includes("repeat the same"))).toBe(false);
+    // Free-text cameras simply don't participate.
+    const free = [fr("a", { camera: "looking down the alley" }), fr("b", { camera: "looking down the alley" })];
+    expect(rhythmWarnings({ frames: free })).toEqual([]);
+  });
+
+  it("advises when P3 isn't the episode's biggest size-jump (and stays quiet when it is)", () => {
+    // wide → full → medium → xws: P3's jump (1) is smaller than others (2).
+    const off = [
+      fr("a", { camera: "wide shot" }),
+      fr("b", { camera: "full shot, full body in frame" }),
+      fr("c", { camera: "medium shot, waist up" }),
+      fr("d", { camera: "extreme wide establishing shot" }),
+    ];
+    expect(rhythmWarnings({ frames: off }).some((n) => n.includes("biggest camera change"))).toBe(true);
+    // wide → medium → extreme close-up → close: P3's jump ties for the largest. Quiet.
+    const on = [
+      fr("a", { camera: "wide shot" }),
+      fr("b", { camera: "medium shot, waist up" }),
+      fr("c", { camera: "extreme close-up" }),
+      fr("d", { camera: "close-up" }),
+    ];
+    expect(rhythmWarnings({ frames: on }).some((n) => n.includes("biggest camera change"))).toBe(false);
+  });
+
+  it("flags the gutter budget: >1 scene, aspect past the first half, effort over the ceiling", () => {
+    const frames = [
+      fr("a"),
+      fr("b", { gutter: "scene" }),
+      fr("c", { gutter: "scene" }),
+      fr("d", { gutter: "aspect" }),
+    ];
+    const notes = rhythmWarnings({ frames });
+    expect(notes.some((n) => n.includes("2 scene jumps"))).toBe(true);
+    expect(notes.some((n) => n.includes("aspect panel"))).toBe(true);
+    // scene(5) + scene(5) + aspect(4) = 14 > 12.
+    expect(notes.some((n) => n.includes("14 of 12"))).toBe(true);
+    expect(GUTTER_EFFORT.moment).toBe(1); // the effort scale is data
+  });
+
+  it("reads the DraftModal's id-less parse stand-ins (no camera, no image, mapped links)", () => {
+    // Mirrors the stand-in shape DraftModal feeds pre-apply: synthetic `String(i)`
+    // ids, empty variants/refHashes, and the links under the same strictly-earlier
+    // validation the apply path applies. Cameras don't exist at parse time, so the
+    // shot-size checks stay quiet while the gutter-budget ones still fire.
+    const standIn = (i: number, extra: Partial<ComicFrame>): ComicFrame =>
+      ComicFrameSchema.parse({ id: String(i), prompt: `beat ${i}`, variants: [], refHashes: [], ...extra });
+    const frames = [
+      standIn(0, {}),
+      standIn(1, { gutter: "scene" }),
+      standIn(2, { gutter: "scene", continuesFrameId: "1" }),
+      standIn(3, { gutter: "action", continuesFrameId: "1", echoFrameId: "0" }),
+    ];
+    const notes = rhythmWarnings({ frames });
+    expect(notes.some((n) => n.includes("2 scene jumps"))).toBe(true);
+    // The both-set contradiction is exactly what pre-apply review exists to catch.
+    expect(notes.some((n) => n.includes("both an echo and a continuity link"))).toBe(true);
+    expect(notes.some((n) => n.includes("repeat the same"))).toBe(false); // no cameras yet
+  });
+});
+
+describe("prompt length ceiling (spec §14: directive stacking stays bounded)", () => {
+  it("a fully-loaded frame prompt stays under the golden ceiling", () => {
+    // Every v2 block on one frame: plan art direction, role flavor, camera, mood,
+    // palette, transition, and the LONGEST composition directive (continuity
+    // restage with identity sheets). One directive per concern — the ceiling only
+    // has to catch accidental stacking or a runaway directive rewrite.
+    const img = "a".repeat(64);
+    const p = project({
+      plan: {
+        structure: "detonate",
+        archetype: "rain-soaked neon night, mirrors everywhere, 70% dark values",
+        strategy: "villain POV — the detective is never fully seen",
+        theme: "vanity",
+        motif: "the cracked mirror",
+      },
+      style: {
+        theme: "muted ink wash, heavy grain, cinematic",
+        model: "mock/gradient",
+        seed: 7,
+        palette: ["#556B2F", "warm sepia", "neon teal"],
+      },
+      cast: [
+        { id: "h", name: "Hero", refHashes: ["b".repeat(64), "c".repeat(64)] },
+        { id: "v", name: "Villain", refHashes: ["d".repeat(64)] },
+      ],
+      frames: [
+        { id: "a", prompt: "opening", role: "establish", camera: "extreme wide establishing shot", resultHash: img },
+        {
+          id: "b",
+          prompt:
+            "The same alley moments later, the cracked mirror leaning against the bins catching the signage light, rain needling the puddles.",
+          role: "payoff",
+          gutter: "action",
+          continuesFrameId: "a",
+          camera: "low-angle shot looking up",
+          mood: "coiled violence",
+        },
+      ],
+    });
+    const out = composeFramePrompt(p, p.frames[1]!);
+    // Measured ~2.2k with the heaviest directive stack; the ceiling leaves
+    // headroom for wording upkeep but trips long before a model chokes.
+    expect(out.length).toBeLessThan(2600);
+    expect(out.length).toBeGreaterThan(1000); // and it isn't silently truncated
   });
 });

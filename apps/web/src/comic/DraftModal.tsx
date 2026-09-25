@@ -1,7 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
-import { Check, Clapperboard, FileText, Loader2, Sparkles, Trash2, Wand2, X } from "lucide-react";
+import { AlertTriangle, Check, Clapperboard, FileText, Loader2, Sparkles, Trash2, Wand2, X } from "lucide-react";
 import { toast } from "sonner";
-import type { DraftParse, DraftSeriesRef } from "@vengine/shared";
+import {
+  EPISODE_STRUCTURE_LABELS,
+  rhythmWarnings,
+  type ComicFrame,
+  type DraftParse,
+  type DraftSeriesRef,
+} from "@vengine/shared";
 import { useComic } from "../comicStore";
 import { useLibrary } from "../libraryStore";
 import { api } from "../api";
@@ -104,15 +110,21 @@ export function DraftModal({ onClose, initialSeriesId }: Props) {
             ...prev,
             frames: prev.frames
               .filter((_, j) => j !== i)
-              // Continuity indices refer to the parse's own order: a link AT the
-              // removed beat is dropped, links past it shift down by one.
+              // Link indices (continues/echo) refer to the parse's own order: a
+              // link AT the removed beat is dropped, links past it shift down one.
               .map((f) => {
-                if (f.continues === undefined) return f;
-                if (f.continues === i) {
-                  const { continues: _dropped, ...rest } = f;
-                  return rest;
+                let next = f;
+                for (const key of ["continues", "echo"] as const) {
+                  const at = next[key];
+                  if (at === undefined) continue;
+                  if (at === i) {
+                    const { [key]: _dropped, ...rest } = next;
+                    next = rest as typeof f;
+                  } else if (at > i) {
+                    next = { ...next, [key]: at - 1 };
+                  }
                 }
-                return f.continues > i ? { ...f, continues: f.continues - 1 } : f;
+                return next;
               }),
           }
         : prev,
@@ -143,6 +155,28 @@ export function DraftModal({ onClose, initialSeriesId }: Props) {
       ),
     [activeCast, storyCharacterNames],
   );
+  // Advisory review notes (rhythm + gutter budget) computed on the not-yet-applied
+  // parse — same pure `rhythmWarnings` the Studio rail uses, fed id-less stand-in
+  // frames carrying exactly the fields the checker reads (gutter, and the
+  // continuity/echo links under the same strictly-earlier validation the apply
+  // path applies). Notes advise; the apply goes through regardless (the author
+  // decides). Camera sizes don't exist until the beats land on frames, so the
+  // shot-size checks only start firing in the Studio rail.
+  const reviewNotes = useMemo(() => {
+    if (!parse) return [];
+    const frames = parse.frames.map<ComicFrame>((f, i) => ({
+      id: String(i),
+      prompt: f.prompt,
+      variants: [],
+      refHashes: [],
+      ...(i > 0 && f.gutter ? { gutter: f.gutter } : {}),
+      ...(f.continues !== undefined && f.continues < i
+        ? { continuesFrameId: String(f.continues) }
+        : {}),
+      ...(f.echo !== undefined && f.echo < i ? { echoFrameId: String(f.echo) } : {}),
+    }));
+    return rhythmWarnings({ frames });
+  }, [parse]);
 
   const createEpisode = async () => {
     if (!parse || parse.frames.length === 0) return;
@@ -312,6 +346,55 @@ export function DraftModal({ onClose, initialSeriesId }: Props) {
               </div>
             )}
 
+            {/* The episode's creative plan — the one vision every frame prompt
+                receives. Shown as read-only; refine it later via the director. */}
+            {parse.plan && (
+              <div className="flex flex-col gap-1.5 rounded-lg border border-border bg-elevated/40 p-3">
+                <div className="flex items-center gap-2">
+                  <span className="text-[10px] uppercase tracking-wide text-faint">Plan</span>
+                  <span className="rounded-full bg-accent/15 px-1.5 py-0.5 text-[10px] font-medium text-accent">
+                    {EPISODE_STRUCTURE_LABELS[parse.plan.structure]}
+                  </span>
+                </div>
+                <div className="grid grid-cols-[max-content_1fr] gap-x-3 gap-y-1 text-[11px]">
+                  {(
+                    [
+                      ["art direction", parse.plan.archetype],
+                      ["strategy", parse.plan.strategy],
+                      ["theme", parse.plan.theme],
+                      ["motif", parse.plan.motif],
+                      ["next episode", parse.plan.token],
+                    ] as const
+                  )
+                    .filter(([, v]) => v.trim())
+                    .map(([label, v]) => (
+                      <div key={label} className="col-span-2 flex gap-2">
+                        <span className="w-24 shrink-0 text-faint">{label}</span>
+                        <span className="min-w-0 text-muted">{v.trim()}</span>
+                      </div>
+                    ))}
+                </div>
+              </div>
+            )}
+
+            {/* Advisory review notes (rhythm + gutter budget) — the author sees
+                them before generating; applying proceeds regardless. */}
+            {reviewNotes.length > 0 && (
+              <div className="flex flex-col gap-1 rounded-lg border border-amber/30 bg-amber/10 p-3">
+                <div className="flex items-center gap-1.5 text-[11px] font-medium text-amber">
+                  <AlertTriangle className="h-3.5 w-3.5" />
+                  Review notes
+                </div>
+                <ul className="flex flex-col gap-0.5">
+                  {reviewNotes.map((n, i) => (
+                    <li key={i} className="text-[11px] leading-snug text-amber/90">
+                      · {n}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
             {/* Story / settings the parser inferred (editable, opt-in on apply). */}
             <div className="flex flex-col gap-3 rounded-lg border border-border bg-elevated/40 p-3">
               <label className="flex items-center gap-2 text-[11px] font-medium text-muted">
@@ -366,11 +449,34 @@ export function DraftModal({ onClose, initialSeriesId }: Props) {
                         {f.script.trim()}
                       </p>
                     )}
-                    {/* Storyline treatment the parser inferred: thread grouping,
-                        per-beat tone, palette accents, and scene-continuity links
-                        (incl. non-adjacent beats of an interleaved storyline). */}
-                    {(f.thread.trim() || f.mood.trim() || f.palette.length > 0 || f.continues !== undefined) && (
+                    {/* Structure + storyline treatment the parser inferred: the
+                        beat's role, its typed gutter in, thread grouping, per-beat
+                        tone, palette accents, and continuity/echo links (incl.
+                        non-adjacent beats of an interleaved storyline). */}
+                    {(f.role ||
+                      f.gutter ||
+                      f.thread.trim() ||
+                      f.mood.trim() ||
+                      f.palette.length > 0 ||
+                      f.continues !== undefined ||
+                      f.echo !== undefined) && (
                       <div className="flex flex-wrap items-center gap-1">
+                        {f.role && (
+                          <span
+                            className="rounded-full bg-accent/15 px-1.5 py-0.5 text-[10px] font-medium text-accent"
+                            title="This beat's role in the episode structure — flavors the craft directive"
+                          >
+                            ◆ {f.role}
+                          </span>
+                        )}
+                        {f.gutter && (
+                          <span
+                            className="rounded-full bg-elevated px-1.5 py-0.5 text-[10px] text-muted"
+                            title="The typed transition into this beat (McCloud's six) — composes a Transition directive"
+                          >
+                            ↳ {f.gutter}
+                          </span>
+                        )}
                         {f.thread.trim() && (
                           <span
                             className="rounded-full bg-purple/15 px-1.5 py-0.5 text-[10px] text-purple"
@@ -399,6 +505,11 @@ export function DraftModal({ onClose, initialSeriesId }: Props) {
                         {f.continues !== undefined && (
                           <span className="rounded-full bg-elevated px-1.5 py-0.5 text-[10px] text-faint" title="Continues that beat's scene (its image feeds this frame as the continuity reference)">
                             ↪ frame {f.continues + 1}
+                          </span>
+                        )}
+                        {f.echo !== undefined && (
+                          <span className="rounded-full bg-elevated px-1.5 py-0.5 text-[10px] text-faint" title="Mirrors that beat's composition — the bookend payout (its image leads the references)">
+                            ⧉ echoes frame {f.echo + 1}
                           </span>
                         )}
                       </div>
